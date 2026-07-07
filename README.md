@@ -1,4 +1,15 @@
-# Pipeline directo de muografía para Volcán Machín
+# CABRIALES
+
+**Cosmic-ray AI Backpropagation and Ray-tracing with Integrated Angular
+scattering for Low-cost Emulation and Simulation**
+
+CABRIALES es un pipeline reproducible de muografía computacional para simular,
+filtrar y analizar muones atmosféricos en geometrías volcánicas. El proyecto
+combina trazado de rayos sobre DEM, tablas de energía crítica, mapas angulares
+theta-phi y modelos de dispersión angular para estudiar el Volcán Machín con
+entradas ARTI/CORSIKA o CNF.
+
+## Pipeline directo de muografía para Volcán Machín
 
 Este repositorio organiza una cadena reproducible para construir muogramas simulados del Volcán Machín a partir de:
 

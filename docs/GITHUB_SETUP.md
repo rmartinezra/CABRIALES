@@ -16,14 +16,14 @@ git commit -m "Initial Machin muography pipeline"
 
 Opcion A: desde la pagina de GitHub
 
-1. Crear un repo nuevo en GitHub, por ejemplo `machin-muography-pipeline`.
+1. Crear un repo nuevo en GitHub, por ejemplo `CABRIALES`.
 2. No marcar "Add README", porque este proyecto ya tiene README.
 3. Copiar la URL SSH o HTTPS.
 
 Opcion B: con GitHub CLI, si esta instalado y autenticado
 
 ```bash
-gh repo create machin-muography-pipeline --private --source . --remote origin --push
+gh repo create CABRIALES --private --source . --remote origin --push
 ```
 
 ## 3. Enlazar este repo local al remoto
@@ -31,7 +31,7 @@ gh repo create machin-muography-pipeline --private --source . --remote origin --
 Con SSH:
 
 ```bash
-git remote add origin git@github.com:TU_USUARIO/machin-muography-pipeline.git
+git remote add origin git@github.com:TU_USUARIO/CABRIALES.git
 git branch -M main
 git push -u origin main
 ```
@@ -39,7 +39,7 @@ git push -u origin main
 Con HTTPS:
 
 ```bash
-git remote add origin https://github.com/TU_USUARIO/machin-muography-pipeline.git
+git remote add origin https://github.com/TU_USUARIO/CABRIALES.git
 git branch -M main
 git push -u origin main
 ```
