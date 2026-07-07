@@ -1,0 +1,53 @@
+# Python/cache
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual environments and local config
+.venv/
+venv/
+env/
+.env
+.env.*
+
+# Pipeline outputs and logs
+run_*/
+outputs/
+logs/
+*.log
+orchestrator.pid
+orchestrator_stdout.log
+
+# Heavy simulation/input data
+*.shw
+*.shw.gz
+*.shw.xz
+*.shw.bz2
+*.tar
+*.tar.gz
+*.tgz
+*.tar.xz
+*.txz
+*.tar.bz2
+*.tbz2
+*.hgt
+
+# Generated figures and local exploratory artifacts
+*.png
+*.jpg
+*.jpeg
+*.tif
+*.tiff
+*.pdf
+
+# Keep small reference tables under data/, but ignore raw/generated payloads there.
+data/*
+!data/data_rock.dat
+!data/muon_range_table.csv
+!data/*.py
+
+# Large/derived analysis folders
+muones_criticos_geant4/extreme_scattering_results/
