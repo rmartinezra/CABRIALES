@@ -24,12 +24,19 @@ from modulos.progress import format_duration
 PROJECT_ROOT = Path(__file__).resolve().parent
 DEFAULT_POINTS = ("P1", "P2", "P4", "P5")
 DEFAULT_PIPELINE_90D_OUT = Path("run_machin90dia_allpoints_full")
-DEFAULT_BACKGROUND_90D_OUT = Path(
-    DEFAULT_PIPELINE_90D_OUT
-    / "10_in_scattering_background"
-    / "machin90d_4points_volcano_surface_workers8"
-)
+DEFAULT_BACKGROUND_RUN_STEM = "machin90d_4points_volcano_surface"
 DEFAULT_KERNEL = Path("modulos/hybrid_empirical_kernel_library.npz")
+
+
+def default_background_90d_out(pipeline_outdir: Path | str, workers: int) -> Path:
+    """Name the background campaign after its actual worker configuration."""
+    if workers < 1:
+        raise ValueError("El background espacial requiere al menos un worker.")
+    return (
+        Path(pipeline_outdir)
+        / "10_in_scattering_background"
+        / f"{DEFAULT_BACKGROUND_RUN_STEM}_workers{workers}"
+    )
 
 
 def detect_default_90d_cache() -> Path:
@@ -244,18 +251,23 @@ def validate_background(out_root: Path | str, points: Iterable[str], *, dry_run:
 
 
 def cmd_background90d(args: argparse.Namespace, extra: list[str]) -> int:
+    out_root = args.out_root or default_background_90d_out(DEFAULT_PIPELINE_90D_OUT, args.workers)
     rc = run(
-        build_background90d_cmd(args, extra),
+        build_background90d_cmd(args, extra, out_root=out_root),
         label="Background espacial 90 dias",
         dry_run=args.dry_run,
     )
     if rc != 0 or args.no_validate:
         return rc
-    return validate_background(args.out_root, args.points, dry_run=args.dry_run)
+    return validate_background(out_root, args.points, dry_run=args.dry_run)
 
 
 def cmd_full(args: argparse.Namespace, extra: list[str]) -> int:
     print("CABRIALES FULL: pipeline -> background espacial -> validacion", flush=True)
+    background_out_root = args.background_out_root or default_background_90d_out(
+        args.pipeline_outdir,
+        args.workers,
+    )
     # Keep pass-through arguments on the pipeline step, where most framework flags live.
     pipeline_args = argparse.Namespace(**vars(args))
     pipeline_args.outdir = args.pipeline_outdir
@@ -269,7 +281,7 @@ def cmd_full(args: argparse.Namespace, extra: list[str]) -> int:
         return rc
 
     background_args = argparse.Namespace(**vars(args))
-    background_args.out_root = args.background_out_root
+    background_args.out_root = background_out_root
     background_args.ecrit_root = str(Path(args.pipeline_outdir) / "03_ecrit")
     rc = run(
         build_background90d_cmd(background_args, []),
@@ -285,7 +297,7 @@ def cmd_full(args: argparse.Namespace, extra: list[str]) -> int:
     )
     if rc != 0:
         return rc
-    return validate_background(args.background_out_root, args.points, dry_run=args.dry_run)
+    return validate_background(background_out_root, args.points, dry_run=args.dry_run)
 
 
 def add_progress_argument(parser: argparse.ArgumentParser) -> None:
@@ -348,11 +360,15 @@ def build_parser() -> argparse.ArgumentParser:
     mach.set_defaults(func=cmd_machin90d)
 
     bg = sub.add_parser("background90d", help="Corre in-scattering espacial 90 dias para P1/P2/P4/P5.")
-    bg.add_argument("--out-root", default=str(DEFAULT_BACKGROUND_90D_OUT))
+    bg.add_argument(
+        "--out-root",
+        default=None,
+        help="Salida opcional; por defecto termina en volcano_surface_workersN.",
+    )
     bg.add_argument("--kinematic-cache", default=str(DEFAULT_90D_CACHE))
     bg.add_argument("--ecrit-root", default=str(DEFAULT_PIPELINE_90D_OUT / "03_ecrit"))
     bg.add_argument("--points", nargs="+", choices=DEFAULT_POINTS, default=list(DEFAULT_POINTS))
-    bg.add_argument("--workers", type=int, default=8)
+    bg.add_argument("--workers", type=int, default=10)
     bg.add_argument("--sample-probability", type=float, default=1.0)
     bg.add_argument("--seed", type=int, default=12345)
     bg.add_argument("--kernel-npz", default=str(DEFAULT_KERNEL))
@@ -372,13 +388,17 @@ def build_parser() -> argparse.ArgumentParser:
         help="Corre y valida todo: pipeline 90 dias y background espacial.",
     )
     all90d.add_argument("--pipeline-outdir", default=str(DEFAULT_PIPELINE_90D_OUT))
-    all90d.add_argument("--background-out-root", default=str(DEFAULT_PIPELINE_90D_OUT / "10_in_scattering_background" / "machin90d_4points_volcano_surface_workers8"))
+    all90d.add_argument(
+        "--background-out-root",
+        default=None,
+        help="Salida opcional; por defecto usa pipeline-outdir y termina en workersN.",
+    )
     all90d.add_argument("--kinematic-cache", default=str(DEFAULT_90D_CACHE))
     all90d.add_argument("--shw", default=None)
     all90d.add_argument("--shw-format", choices=["auto", "arti12", "cnf9"], default="cnf9")
     all90d.add_argument("--shw-member", default=None)
     all90d.add_argument("--points", nargs="+", choices=DEFAULT_POINTS, default=list(DEFAULT_POINTS))
-    all90d.add_argument("--workers", type=int, default=8)
+    all90d.add_argument("--workers", type=int, default=10)
     all90d.add_argument("--sample-probability", type=float, default=1.0)
     all90d.add_argument("--seed", type=int, default=12345)
     all90d.add_argument("--kernel-npz", default=str(DEFAULT_KERNEL))

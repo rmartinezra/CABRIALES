@@ -30,7 +30,7 @@ Reglas físicas que no deben violarse:
   inyección multiplica el número ideal de muones incidentes.
 - Indicar que las áreas sumadas por punto no son necesariamente una superficie
   física única sin solapamiento.
-- Mantener separados los 379 eventos MC aceptados de los conteos escalados por
+- Mantener separados los 342 eventos MC aceptados de los conteos escalados por
   área.
 - Reportar la incertidumbre Monte Carlo de cada punto.
 

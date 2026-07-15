@@ -43,8 +43,22 @@ full-tail de energías cercanas al umbral.
 
 ## Estado de los resultados del artículo
 
-Los JSON y figuras ya copiados en `articulo_prims/resultados/` corresponden a
-la corrida de 90 días anterior y registran el kernel usado en esa corrida. La
-integración descrita aquí solo tuvo una prueba corta: esos resultados no deben
-presentarse como si hubieran sido recalculados con el modelo full-tail. Una
-nueva corrida completa debe guardarse y compararse por separado.
+Los JSON y figuras de `articulo_prims/` fueron regenerados el 15 de julio de
+2026 con esta biblioteca híbrida. La corrida usó todo el cache de 90 días,
+`sample_probability=1`, 10 workers y semilla base `12345`:
+
+```bash
+python3 cabriales.py full \
+  --points P1 P2 P4 P5 \
+  --workers 10 \
+  --sample-probability 1.0 \
+  --seed 12345 \
+  --force
+```
+
+El pipeline produjo 184 salidas indexadas, ninguna faltante y cero alertas en
+logs. El background espacial leyó `1,363,053,739` eventos por punto y aceptó
+126, 69, 49 y 98 eventos para P1, P2, P4 y P5, respectivamente. Todos los
+puntos registraron cero pasos sin soporte del kernel. Los resúmenes canónicos
+están en `resultados/` y conservan los contadores de fallback, supervivencia,
+área efectiva e incertidumbre Monte Carlo.

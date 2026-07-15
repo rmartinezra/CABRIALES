@@ -78,6 +78,9 @@ validación:
 python3 cabriales.py full --force
 ```
 
+El perfil `full` usa 10 workers por defecto. Puede cambiarse con
+`--workers N`; el nombre de la carpeta del background registra el valor real.
+
 `--force` reemplaza la salida predeterminada. Para revisar primero las órdenes
 sin modificar resultados:
 
@@ -126,10 +129,10 @@ salida de terminal y escribe el PDF angular en
 `--kernel-npz`; el pipeline completo registra ruta, familia, soporte angular y
 método de interpolación en sus resúmenes.
 
-Actualizar el código no reescribe corridas existentes. Los mapas y resúmenes
-de 90 días creados antes de este cambio conservan el kernel indicado en sus
-propios JSON; deben regenerarse para hacer una comparación científica con el
-modelo full-tail.
+La corrida definitiva de los cuatro puntos fue regenerada el 15 de julio de
+2026 con el kernel híbrido, todo el cache de 90 días, `sample_probability=1`,
+semilla base `12345` y 10 workers. Cada punto leyó `1,363,053,739` eventos; no
+hubo consultas sin soporte del kernel.
 
 El cache cinemático de 90 días se busca en este orden:
 
@@ -157,7 +160,7 @@ CABRIALES FULL: pipeline -> background espacial -> validacion
 [RUNNING] 01_geometry | elapsed=1m 00s | log=...
 [OK] 01_geometry | elapsed=1m 17s
 [CAMPAIGN 1/4] point=P1
-[PROGRESS] P1: chunks=5/8 elapsed=14m 32s
+[PROGRESS] P1: chunks=5/10 elapsed=14m 32s
 [OK] Background completo | puntos=4 | accepted=...
 ```
 
@@ -225,7 +228,7 @@ El resumen combinado del background queda en:
 ```text
 run_machin90dia_allpoints_full/
 └── 10_in_scattering_background/
-    └── machin90d_4points_volcano_surface_workers8/
+    └── machin90d_4points_volcano_surface_workers10/
         ├── four_point_summary.json
         ├── four_point_summary.csv
         ├── P1/
@@ -234,9 +237,23 @@ run_machin90dia_allpoints_full/
         └── P5/
 ```
 
-Cada punto conserva ocho chunks reproducibles, el resultado reducido, mapas
-finales, orígenes externos, contactos con roca, histogramas y trayectorias
-aceptadas.
+Cada punto conserva un chunk reproducible por worker, el resultado reducido,
+mapas finales, orígenes externos, contactos con roca, histogramas y
+trayectorias aceptadas.
+
+### Resultado de referencia, 90 días
+
+| Punto | Aceptados MC | Error relativo MC | Área objetivo ideal | Escalado ideal por día |
+|---|---:|---:|---:|---:|
+| P1 | 126 | 8.91% | 1.5600 km2 | 2,184,000.00 |
+| P2 | 69 | 12.04% | 2.5475 km2 | 1,953,083.33 |
+| P4 | 49 | 14.29% | 3.7050 km2 | 2,017,166.67 |
+| P5 | 98 | 10.10% | 1.6375 km2 | 1,783,055.56 |
+| Total | 342 | 5.41% para el conteo MC | 9.4500 km2 | 7,937,305.56 |
+
+El total de área suma superficies objetivo definidas por observador y puede
+contener solapamientos físicos. El escalado es un diagnóstico ideal de la
+superficie de inyección; no es una tasa instrumental.
 
 ## Generador de flujo CNF
 

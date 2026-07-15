@@ -22,17 +22,6 @@ python3 cabriales.py smoke --force
 Este comando ejecuta el perfil pequeño de Bariloche y valida sus salidas. Es la
 primera prueba recomendada después de instalar o actualizar el repositorio.
 
-Verificar independientemente el kernel empírico híbrido:
-
-```bash
-python3 cabriales.py kernel-smoke
-```
-
-El pipeline usa por defecto `modulos/hybrid_empirical_kernel_library.npz` con
-despacho híbrido: `tail-aware` dentro del dominio full-tail cercano al umbral y
-core empírico para el dominio amplio de energía. El soporte común es de
-`-1600` a `1600 mrad` y el umbral es cero.
-
 ## 3. Corrida completa de 90 días
 
 ```bash
@@ -45,7 +34,7 @@ Incluye:
 - longitud de roca y energía crítica;
 - fast-cache y mapas theta-phi filtrados;
 - kernel empírico, smearing y event-by-event MC;
-- campaña espacial de in-scattering con 8 workers por punto;
+- campaña espacial de in-scattering con 10 workers por punto;
 - validación del pipeline y del resumen de background.
 
 La salida predeterminada es:
@@ -53,6 +42,10 @@ La salida predeterminada es:
 ```text
 run_machin90dia_allpoints_full/
 ```
+
+El background queda en
+`10_in_scattering_background/machin90d_4points_volcano_surface_workers10/`.
+Si se pasa `--workers N`, el sufijo cambia automáticamente a `workersN`.
 
 Antes de reemplazar una corrida, revisar los comandos:
 

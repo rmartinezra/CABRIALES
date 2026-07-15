@@ -74,19 +74,19 @@ volcánica muestreada y el histograma de longitud de roca de los aceptados.
 
 ## Resultados resumidos de 90 días
 
-**Trazabilidad:** las cifras y mapas de esta sección pertenecen a la corrida
-anterior y conservan en sus JSON la ruta del kernel usado entonces. El modelo
-híbrido full-tail actual pasó pruebas cortas, pero estos resultados de 90 días
-todavía no se han regenerado con él. Véase
+**Trazabilidad:** cifras y mapas regenerados el 15 de julio de 2026 con todo el
+cache cinemático de 90 días, `sample_probability=1`, 10 workers, semilla base
+`12345` y el kernel `hybrid_empirical_kernel_library.npz`. Cada punto leyó
+`1,363,053,739` eventos y registró cero pasos sin soporte del kernel. Véase
 `documentacion/KERNEL_FULL_TAIL.md`.
 
 | Punto | Aceptados MC | Área efectiva ideal | Escalado ideal por día | Error relativo MC |
 |---|---:|---:|---:|---:|
-| P1 | 124 | 1.5600 km2 | 2,149,333.33 | 8.98% |
-| P2 | 93 | 2.5475 km2 | 2,632,416.67 | 10.37% |
-| P4 | 65 | 3.7050 km2 | 2,675,833.33 | 12.40% |
-| P5 | 97 | 1.6375 km2 | 1,764,861.11 | 10.15% |
-| Total | 379 | 9.4500 km2 | 9,222,444.44 | - |
+| P1 | 126 | 1.5600 km2 | 2,184,000.00 | 8.91% |
+| P2 | 69 | 2.5475 km2 | 1,953,083.33 | 12.04% |
+| P4 | 49 | 3.7050 km2 | 2,017,166.67 | 14.29% |
+| P5 | 98 | 1.6375 km2 | 1,783,055.56 | 10.10% |
+| Total | 342 | 9.4500 km2 | 7,937,305.56 | 5.41% para el conteo MC |
 
 Las áreas de los cuatro puntos se suman como superficies objetivo específicas
 de cada observador. No representan necesariamente un área física única y sin
@@ -117,6 +117,9 @@ módulos físicos. El camino reproducible completo del repositorio original es:
 ```bash
 python3 cabriales.py full --force
 ```
+
+El perfil reproducido usa 10 workers por defecto y escribe el background bajo
+`machin90d_4points_volcano_surface_workers10/`.
 
 `codigo/cnf/` contiene los dos ejecutables del generador CNF y sus dependencias.
 El peso `model.pt` no se duplica aquí; se encuentra en el repositorio principal
