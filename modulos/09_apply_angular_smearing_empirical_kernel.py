@@ -37,12 +37,12 @@ except Exception as exc:  # pragma: no cover
     raise SystemExit("scipy is required for empirical-kernel interpolation") from exc
 
 try:
-    from empirical_kernel_io import load_empirical_kernel_library
+    from empirical_kernel_io import TailAwareEmpiricalKernel, load_empirical_kernel_library
     from plot_style import apply_scientific_style
 except ModuleNotFoundError:  # pragma: no cover
     import sys
     sys.path.insert(0, str(Path(__file__).resolve().parent))
-    from empirical_kernel_io import load_empirical_kernel_library
+    from empirical_kernel_io import TailAwareEmpiricalKernel, load_empirical_kernel_library
     from plot_style import apply_scientific_style
 
 MUON_MASS_GEV = 0.10565837
@@ -113,9 +113,16 @@ def normalize_probability(prob: np.ndarray) -> np.ndarray:
 
 
 class EmpiricalKernelModel:
-    def __init__(self, npz_path: Path, interp_method: str = "rbf_linear"):
+    def __init__(self, npz_path: Path, interp_method: str = "tail-aware"):
         self.path = Path(npz_path)
         self.interp_method = interp_method
+        self.tail_aware = None
+        if interp_method == "tail-aware":
+            self.tail_aware = TailAwareEmpiricalKernel(self.path)
+            self.kernel_family = self.tail_aware.kernel_family
+            self.centers_mrad = self.tail_aware.centers_mrad
+            self.edges_mrad = self.tail_aware.edges_mrad
+            return
         lib = load_empirical_kernel_library(self.path)
         self.kernel_family = lib.family
         self.centers_mrad = lib.centers_mrad
@@ -193,6 +200,16 @@ class EmpiricalKernelModel:
         return self.values[int(np.ravel(idx)[0])].copy()
 
     def predict_kernel(self, L_m: float, E_GeV: float):
+        if self.tail_aware is not None:
+            pred = self.tail_aware.predict_kernel(L_m, E_GeV)
+            meta = {
+                "used_nearest_fallback": pred.used_nearest_fallback,
+                "outside_domain": pred.outside_domain,
+                "valid": pred.valid,
+                "interpolation_mode": pred.interpolation_mode,
+                "tail_policy": pred.tail_policy,
+            }
+            return pred.centers_mrad, pred.probability_per_bin, meta
         meta = {"used_nearest_fallback": False, "outside_domain": False, "valid": False}
         if not (np.isfinite(L_m) and np.isfinite(E_GeV) and L_m > 0.0 and E_GeV > 0.0):
             return self.centers_mrad, np.zeros_like(self.centers_mrad), meta
@@ -693,9 +710,14 @@ def parser():
     ap.add_argument("--inside-map-template", default=None)
     ap.add_argument("--ecrit-template", default=None)
     ap.add_argument("--ecrit-dir", type=Path, default=None)
-    ap.add_argument("--kernel-library", type=Path, default=None, help="Path to empirical_kernel_library.npz")
+    ap.add_argument(
+        "--kernel-library",
+        type=Path,
+        default=Path(__file__).resolve().parent / "hybrid_empirical_kernel_library.npz",
+        help="Empirical kernel library (default: bundled hybrid full-tail model).",
+    )
     ap.add_argument("--outdir", type=Path, default=Path("outputs_smearing_empirical"))
-    ap.add_argument("--interp-method", choices=["rbf_linear", "linear", "nearest"], default="linear")
+    ap.add_argument("--interp-method", choices=["tail-aware", "rbf_linear", "linear", "nearest"], default="tail-aware")
     ap.add_argument("--value-col", default=None)
 
     ap.add_argument("--theta-min", type=float, default=None, help="Mínimo theta a usar. Default: inferido desde CSV")

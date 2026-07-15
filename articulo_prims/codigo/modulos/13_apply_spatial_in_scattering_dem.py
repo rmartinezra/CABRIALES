@@ -713,7 +713,12 @@ def plot_map(path: Path, theta_edges, phi_edges, values, title: str, cbar_label:
 def parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(description="Spatial DEM diagnostic for external -> volcano-mask in-scattering.")
     ap.add_argument("--kinematic-cache", required=True, type=Path)
-    ap.add_argument("--kernel-npz", required=True, type=Path)
+    ap.add_argument(
+        "--kernel-npz",
+        type=Path,
+        default=MODULE_DIR / "hybrid_empirical_kernel_library.npz",
+        help="Empirical MCS kernel (default: bundled hybrid full-tail model).",
+    )
     ap.add_argument("--acceptance-map", required=True, type=Path)
     ap.add_argument("--length-map", required=True, type=Path)
     ap.add_argument("--output-dir", required=True, type=Path)
@@ -759,7 +764,7 @@ def parser() -> argparse.ArgumentParser:
     ap.add_argument("--phi-max-deg", type=float, default=180.0)
     ap.add_argument("--discard-upgoing", action="store_true")
     ap.add_argument("--rho", type=float, default=2.65)
-    ap.add_argument("--interp-method", choices=["linear", "rbf_linear", "nearest"], default="linear")
+    ap.add_argument("--interp-method", choices=["tail-aware", "linear", "rbf_linear", "nearest"], default="tail-aware")
     ap.add_argument("--rbf-smoothing", type=float, default=0.0)
     ap.add_argument("--kernel-threshold", type=float, default=0.0)
     ap.add_argument("--kernel-scale", type=float, default=1.0)
@@ -826,6 +831,12 @@ def main(argv=None) -> int:
         raise FileNotFoundError("No encontré data_rock.dat/muon_range_table.csv")
     energy_loss, range_table_path = INSCAT.load_energy_loss(range_file, args.output_dir, args.rho)
     model = EVENT_MC.EmpiricalKernelModel(args.kernel_npz, args.interp_method, args.rbf_smoothing)
+    print(
+        f"[KERNEL] family={model.kernel_family} method={args.interp_method} "
+        f"bins={len(model.centers_mrad)} support_mrad="
+        f"[{model.edges_mrad[0]:g}, {model.edges_mrad[-1]:g}] "
+        f"threshold={args.kernel_threshold:g}"
+    )
     rng = np.random.default_rng(int(args.seed) + 10007 * int(args.chunk_index))
     distance_deg_grid = INSCAT.angular_distance_to_acceptance(grid, grid.inside_mask)
 
@@ -1208,6 +1219,12 @@ def main(argv=None) -> int:
             "sample_event_weight": float(1.0 / float(args.sample_probability)),
             "min_survival_rock_m": float(args.min_survival_rock_m),
             "rho_g_cm3": float(args.rho),
+            "interp_method": args.interp_method,
+            "kernel_family": model.kernel_family,
+            "kernel_tail_policy": "body_quantile_tail_histogram_linear" if args.interp_method == "tail-aware" else "legacy",
+            "kernel_support_mrad": [float(model.edges_mrad[0]), float(model.edges_mrad[-1])],
+            "kernel_energy_cache_dlog": float(model.tail_aware.energy_cache_dlog) if model.tail_aware is not None else 0.0,
+            "kernel_threshold": float(args.kernel_threshold),
             "kernel_scale": float(args.kernel_scale),
             "disable_scattering": bool(args.disable_scattering),
         },

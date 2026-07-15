@@ -72,7 +72,9 @@ def parser() -> argparse.ArgumentParser:
             )
         ),
     )
-    ap.add_argument("--kernel-npz", type=Path, default=Path("modulos/empirical_kernel_library.npz"))
+    ap.add_argument("--kernel-npz", type=Path, default=Path("modulos/hybrid_empirical_kernel_library.npz"))
+    ap.add_argument("--interp-method", choices=["tail-aware", "linear", "rbf_linear", "nearest"], default="tail-aware")
+    ap.add_argument("--kernel-threshold", type=float, default=0.0)
     ap.add_argument("--ecrit-root", type=Path, default=Path("run_machin90dia_allpoints_full/03_ecrit"))
     ap.add_argument("--hgt-dir", default="data")
     ap.add_argument("--range-file", type=Path, default=Path("data/data_rock.dat"))
@@ -210,6 +212,8 @@ def build_worker_cmd(
         "--min-survival-rock-m", str(cfg.min_survival_rock_m),
         "--sample-probability", str(cfg.sample_probability),
         "--kernel-scale", str(cfg.kernel_scale),
+        "--interp-method", str(args.interp_method),
+        "--kernel-threshold", str(args.kernel_threshold),
         "--no-progress",
         "--no-figures",
     ]
@@ -264,6 +268,11 @@ def run_point(root: Path, args: argparse.Namespace, cfg: TransportConfig, point:
         "workers": args.workers,
         "point_seed": point_seed(cfg.base_seed, point),
         "transport_config": asdict(cfg),
+        "kernel": {
+            "path": str(resolve_from_root(root, args.kernel_npz)),
+            "interp_method": args.interp_method,
+            "kernel_threshold": float(args.kernel_threshold),
+        },
         "started_at": time.strftime("%Y-%m-%d %H:%M:%S"),
     }
     (point_dir / "campaign_config.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
@@ -370,6 +379,12 @@ def write_campaign_summary(out_root: Path, rows: list[dict[str, object]], cfg: T
         "points": list(args.points),
         "workers_per_point": args.workers,
         "transport_config": asdict(cfg),
+        "kernel": {
+            "path": str(resolve_from_root(root, args.kernel_npz)),
+            "interp_method": args.interp_method,
+            "kernel_threshold": float(args.kernel_threshold),
+            "tail_policy": "body_quantile_tail_histogram_linear" if args.interp_method == "tail-aware" else "legacy",
+        },
         "status": "ok" if len(ok_rows) == len(rows) else "partial_or_failed",
         "totals": totals,
         "physical_scope_note": (

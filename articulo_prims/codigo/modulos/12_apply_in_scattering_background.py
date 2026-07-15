@@ -1055,7 +1055,12 @@ def parser() -> argparse.ArgumentParser:
     src = ap.add_mutually_exclusive_group(required=True)
     src.add_argument("--input-shw", type=Path, default=None, help="Open-flux SHW/tar input.")
     src.add_argument("--kinematic-cache", type=Path, default=None, help="Chunked kinematic cache from 04_build_kinematic_cache.py.")
-    ap.add_argument("--kernel-npz", required=True, type=Path, help="Empirical MCS kernel .npz.")
+    ap.add_argument(
+        "--kernel-npz",
+        type=Path,
+        default=MODULE_DIR / "hybrid_empirical_kernel_library.npz",
+        help="Empirical MCS kernel (default: bundled hybrid full-tail model).",
+    )
     ap.add_argument("--acceptance-map", required=True, type=Path, help="CSV with accepted angular mask.")
     ap.add_argument("--length-map", required=True, type=Path, help="rock_length/ecrit CSV with length_inside_m.")
     ap.add_argument("--output-dir", required=True, type=Path)
@@ -1095,7 +1100,7 @@ def parser() -> argparse.ArgumentParser:
                     help="Paso del trazador DEM para longitud externa.")
     ap.add_argument("--length-cache-step-deg", type=float, default=0.5,
                     help="Cuantización angular para cachear longitudes externas por DEM. 0 desactiva.")
-    ap.add_argument("--interp-method", choices=["linear", "rbf_linear", "nearest"], default="linear")
+    ap.add_argument("--interp-method", choices=["tail-aware", "linear", "rbf_linear", "nearest"], default="tail-aware")
     ap.add_argument("--rbf-smoothing", type=float, default=0.0)
     ap.add_argument("--kernel-threshold", type=float, default=0.0)
     ap.add_argument("--kernel-scale", type=float, default=1.0, help="Scale sampled angular deflections for validation studies.")
@@ -1173,6 +1178,12 @@ def main(argv=None) -> int:
 
     energy_loss, range_table_path = load_energy_loss(range_file, args.output_dir, args.rho)
     model = EVENT_MC.EmpiricalKernelModel(args.kernel_npz, args.interp_method, args.rbf_smoothing)
+    print(
+        f"[KERNEL] family={model.kernel_family} method={args.interp_method} "
+        f"bins={len(model.centers_mrad)} support_mrad="
+        f"[{model.edges_mrad[0]:g}, {model.edges_mrad[-1]:g}] "
+        f"threshold={args.kernel_threshold:g}"
+    )
     length_model = ExternalLengthModel(
         mode=args.external_length_mode,
         point=point,
@@ -1406,6 +1417,10 @@ def main(argv=None) -> int:
             "external_ray_step_m": float(args.external_ray_step_m),
             "length_cache_step_deg": float(args.length_cache_step_deg),
             "interp_method": args.interp_method,
+            "kernel_family": model.kernel_family,
+            "kernel_tail_policy": "body_quantile_tail_histogram_linear" if args.interp_method == "tail-aware" else "legacy",
+            "kernel_support_mrad": [float(model.edges_mrad[0]), float(model.edges_mrad[-1])],
+            "kernel_energy_cache_dlog": float(model.tail_aware.energy_cache_dlog) if model.tail_aware is not None else 0.0,
             "kernel_threshold": float(args.kernel_threshold),
             "kernel_scale": float(args.kernel_scale),
             "disable_scattering": bool(args.disable_scattering),

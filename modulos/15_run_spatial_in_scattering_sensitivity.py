@@ -61,7 +61,9 @@ def parser() -> argparse.ArgumentParser:
             )
         ),
     )
-    ap.add_argument("--kernel-npz", type=Path, default=Path("modulos/empirical_kernel_library.npz"))
+    ap.add_argument("--kernel-npz", type=Path, default=Path("modulos/hybrid_empirical_kernel_library.npz"))
+    ap.add_argument("--interp-method", choices=["tail-aware", "linear", "rbf_linear", "nearest"], default="tail-aware")
+    ap.add_argument("--kernel-threshold", type=float, default=0.0)
     ap.add_argument("--acceptance-map", type=Path, default=Path("run_machin90dia_p1_fastcache/03_ecrit/ecrit_table_P1.csv"))
     ap.add_argument("--length-map", type=Path, default=Path("run_machin90dia_p1_fastcache/03_ecrit/ecrit_table_P1.csv"))
     ap.add_argument("--hgt-dir", default="data")
@@ -105,6 +107,8 @@ def build_worker_cmd(args, cfg: CampaignConfig, worker_index: int, chunk_dir: Pa
         "--min-survival-rock-m", str(cfg.min_survival_rock_m),
         "--sample-probability", str(args.sample_probability),
         "--kernel-scale", str(cfg.kernel_scale),
+        "--interp-method", str(args.interp_method),
+        "--kernel-threshold", str(args.kernel_threshold),
         "--no-progress",
         "--no-figures",
     ]

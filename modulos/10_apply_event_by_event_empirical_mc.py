@@ -69,11 +69,11 @@ except Exception as exc:  # pragma: no cover
     raise RuntimeError("This script needs scipy. Install it with: pip install scipy") from exc
 
 try:
-    from empirical_kernel_io import load_empirical_kernel_library
+    from empirical_kernel_io import TailAwareEmpiricalKernel, load_empirical_kernel_library
     from plot_style import apply_scientific_style
 except ModuleNotFoundError:  # pragma: no cover
     sys.path.insert(0, str(Path(__file__).resolve().parent))
-    from empirical_kernel_io import load_empirical_kernel_library
+    from empirical_kernel_io import TailAwareEmpiricalKernel, load_empirical_kernel_library
     from plot_style import apply_scientific_style
 
 try:
@@ -181,7 +181,17 @@ class KernelPrediction:
 
 
 class EmpiricalKernelModel:
-    def __init__(self, npz_path: Path, interp_method: str = "linear", rbf_smoothing: float = 0.0) -> None:
+    def __init__(self, npz_path: Path, interp_method: str = "tail-aware", rbf_smoothing: float = 0.0) -> None:
+        self.tail_aware = None
+        if interp_method == "tail-aware":
+            self.tail_aware = TailAwareEmpiricalKernel(npz_path, energy_cache_dlog=0.02)
+            self.kernel_family = self.tail_aware.kernel_family
+            self.centers_mrad = self.tail_aware.centers_mrad
+            self.edges_mrad = self.tail_aware.edges_mrad
+            self.widths_mrad = self.tail_aware.widths_mrad
+            self.interp_method = interp_method
+            self.rbf_smoothing = rbf_smoothing
+            return
         lib = load_empirical_kernel_library(npz_path)
         self.kernel_family = lib.family
         self.centers_mrad = lib.centers_mrad
@@ -248,6 +258,15 @@ class EmpiricalKernelModel:
         return p, True
 
     def predict_kernel(self, L_m: float, E_GeV: float) -> KernelPrediction:
+        if self.tail_aware is not None:
+            pred = self.tail_aware.predict_kernel(L_m, E_GeV)
+            return KernelPrediction(
+                pred.centers_mrad,
+                pred.probability_per_bin,
+                pred.used_nearest_fallback,
+                pred.outside_domain,
+                pred.valid,
+            )
         if (not np.isfinite(L_m)) or (not np.isfinite(E_GeV)) or L_m <= 0.0 or E_GeV <= 0.0:
             return KernelPrediction(self.centers_mrad.copy(), np.zeros_like(self.centers_mrad), False, False, False)
 
@@ -642,6 +661,9 @@ def process_point(payload: dict) -> ProcessResult:
         "ecrit_csv": str(ecrit_csv),
         "kernel_library": str(payload["kernel_library"]),
         "interp_method": payload["interp_method"],
+        "kernel_family": model.kernel_family,
+        "kernel_tail_policy": "body_quantile_tail_histogram_linear" if payload["interp_method"] == "tail-aware" else "legacy",
+        "kernel_support_mrad": f"{model.edges_mrad[0]:g},{model.edges_mrad[-1]:g}",
         "random_seed": int(payload["random_seed"]),
         "energy_cache_dlog": float(payload["energy_cache_dlog"]),
         "n_lines_read": int(n_lines),
@@ -796,10 +818,15 @@ def parser() -> argparse.ArgumentParser:
     src.add_argument("--shw", type=Path, default=None, help="One SHW file reused for all points, usually raw.")
     src.add_argument("--shw-template", default=None, help="Template per point, e.g. run/04_filtered/stem_filtered_{point}.shw")
     ap.add_argument("--ecrit-template", required=True, help="Template: run/03_ecrit/ecrit_table_{point}.csv")
-    ap.add_argument("--kernel-library", required=True, type=Path, help="empirical_kernel_library.npz")
+    ap.add_argument(
+        "--kernel-library",
+        type=Path,
+        default=Path(__file__).resolve().parent / "hybrid_empirical_kernel_library.npz",
+        help="Empirical kernel library (default: bundled hybrid full-tail model).",
+    )
     ap.add_argument("--outdir", type=Path, default=Path("09_event_mc_empirical"))
 
-    ap.add_argument("--interp-method", default="linear", choices=["linear", "rbf_linear", "nearest"])
+    ap.add_argument("--interp-method", default="tail-aware", choices=["tail-aware", "linear", "rbf_linear", "nearest"])
     ap.add_argument("--rbf-smoothing", type=float, default=0.0)
     ap.add_argument("--energy-cache-dlog", type=float, default=0.05,
                     help="Log-energy bin size for cache. 0.05 ≈ 5%%. Use 0 for exact energy, slower.")

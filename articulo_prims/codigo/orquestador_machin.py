@@ -183,7 +183,11 @@ def find_empirical_kernel(explicit: Path | None, scripts_dir: Path, hgt_dir: Pat
     if explicit is not None:
         require_file(explicit, "empirical_kernel_library.npz")
         return explicit
+    env_kernel = os.environ.get("CABRIALES_EMPIRICAL_KERNEL")
     return first_existing([
+        Path(env_kernel).expanduser() if env_kernel else None,
+        scripts_dir / "hybrid_empirical_kernel_library.npz",
+        PROJECT_ROOT / "modulos" / "hybrid_empirical_kernel_library.npz",
         scripts_dir / "empirical_kernel_library.npz",
         PROJECT_ROOT / "modulos" / "empirical_kernel_library.npz",
         hgt_dir / "empirical_kernel_library.npz",
@@ -559,8 +563,8 @@ def build_parser() -> argparse.ArgumentParser:
                     help="Modelo de dispersión angular a ejecutar. Default: highland para conservar compatibilidad.")
     ap.add_argument("--empirical-kernel-library", default=None,
                     help="Ruta a empirical_kernel_library.npz. Default: autodetecta en modulos/ o data/.")
-    ap.add_argument("--empirical-interp-method", choices=["rbf_linear", "linear", "nearest"], default="linear",
-                    help="Interpolación interna del kernel empírico en log(L), log(E/L).")
+    ap.add_argument("--empirical-interp-method", choices=["tail-aware", "rbf_linear", "linear", "nearest"], default="tail-aware",
+                    help="Interpolacion del kernel; tail-aware preserva las colas medidas y el hard scattering.")
     ap.add_argument("--empirical-energy-factors", nargs="+", type=float, default=None,
                     help="Factores Tref = factor*Tcrit para la rama empírica. Default: usa --scattering-energy-factors.")
     ap.add_argument("--empirical-stochastic", action="store_true",
@@ -577,8 +581,8 @@ def build_parser() -> argparse.ArgumentParser:
                     help="Phi mínimo para la rama empírica. Default: usa --smearing-phi-min.")
     ap.add_argument("--empirical-phi-max", type=float, default=None,
                     help="Phi máximo para la rama empírica. Default: usa --smearing-phi-max.")
-    ap.add_argument("--empirical-kernel-threshold", type=float, default=1e-3,
-                    help="Opcional: descarta pesos K menores que este valor en el smearing empírico.")
+    ap.add_argument("--empirical-kernel-threshold", type=float, default=0.0,
+                    help="Corte de densidad del kernel. Default 0 conserva las colas de hard scattering.")
     ap.add_argument("--empirical-max-kernel-radius-mrad", type=float, default=None,
                     help="Opcional: limita el radio angular evaluado del kernel empírico.")
 

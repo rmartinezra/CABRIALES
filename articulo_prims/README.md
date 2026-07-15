@@ -18,6 +18,7 @@ articulo_prims/
 ├── documentacion/
 │   ├── README_CABRIALES.md
 │   ├── USO_RAPIDO.md
+│   ├── KERNEL_FULL_TAIL.md
 │   └── README_MUON_CNF_TOOLKIT.md
 ├── codigo/
 │   ├── cabriales.py
@@ -73,6 +74,12 @@ volcánica muestreada y el histograma de longitud de roca de los aceptados.
 
 ## Resultados resumidos de 90 días
 
+**Trazabilidad:** las cifras y mapas de esta sección pertenecen a la corrida
+anterior y conservan en sus JSON la ruta del kernel usado entonces. El modelo
+híbrido full-tail actual pasó pruebas cortas, pero estos resultados de 90 días
+todavía no se han regenerado con él. Véase
+`documentacion/KERNEL_FULL_TAIL.md`.
+
 | Punto | Aceptados MC | Área efectiva ideal | Escalado ideal por día | Error relativo MC |
 |---|---:|---:|---:|---:|
 | P1 | 124 | 1.5600 km2 | 2,149,333.33 | 8.98% |
@@ -118,6 +125,11 @@ bajo `herramientas/muon-cnf-toolkit/model.pt`.
 `codigo/geant4/` conserva el generador de casos cercanos al umbral usado para
 estudios auxiliares del scattering. `codigo/utilidades_flujo/` reúne los scripts
 de conversión y comparación angular de entradas SHW.
+
+El archivo binario del kernel híbrido no se duplica en esta carpeta editorial.
+Su nombre, procedencia, soporte y SHA-256 están documentados en
+`documentacion/KERNEL_FULL_TAIL.md`; el modelo canónico vive en
+`modulos/hybrid_empirical_kernel_library.npz` del repositorio principal.
 
 ## Orden sugerido para el artículo
 

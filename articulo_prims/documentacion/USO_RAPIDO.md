@@ -22,6 +22,16 @@ python3 cabriales.py smoke --force
 Este comando ejecuta el perfil pequeño de Bariloche y valida sus salidas. Es la
 primera prueba recomendada después de instalar o actualizar el repositorio.
 
+Verificar independientemente el kernel empírico híbrido:
+
+```bash
+python3 cabriales.py kernel-smoke
+```
+
+El pipeline usa por defecto `modulos/hybrid_empirical_kernel_library.npz` con
+interpolación `tail-aware`, soporte de `-1600` a `1600 mrad` y umbral cero para
+preservar las colas de hard scattering.
+
 ## 3. Corrida completa de 90 días
 
 ```bash

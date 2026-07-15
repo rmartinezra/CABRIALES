@@ -60,5 +60,5 @@ herramientas/muon-cnf-toolkit/generated_muons.shw
 herramientas/muon-cnf-toolkit/generated_kinematic_cache/
 herramientas/muon-cnf-toolkit/*_kinematic_cache/
 
-# Local experimental kernel builds; keep modulos/empirical_kernel_library.npz tracked.
-modulos/hybrid_empirical_kernel_library.npz
+# Local experimental kernel builds. The validated hybrid full-tail model under
+# modulos/ is intentionally tracked as CABRIALES' default empirical kernel.

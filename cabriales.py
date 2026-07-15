@@ -29,6 +29,7 @@ DEFAULT_BACKGROUND_90D_OUT = Path(
     / "10_in_scattering_background"
     / "machin90d_4points_volcano_surface_workers8"
 )
+DEFAULT_KERNEL = Path("modulos/hybrid_empirical_kernel_library.npz")
 
 
 def detect_default_90d_cache() -> Path:
@@ -112,11 +113,12 @@ def build_machin90d_cmd(args: argparse.Namespace, extra: list[str]) -> list[obje
         "--plot-source", "filtered",
         "--inside-volcano-source", "filtered",
         "--scattering-model", "empirical",
+        "--empirical-kernel-library", args.kernel_npz,
         "--smearing-source", "filtered",
         "--run-event-mc",
         "--event-mc-source", "filtered",
         "--event-mc-source-mode", "inside",
-        "--empirical-interp-method", "linear",
+        "--empirical-interp-method", "tail-aware",
         "--empirical-kernel-threshold", str(args.empirical_kernel_threshold),
         "--parallel-jobs", str(args.workers),
         "--inside-filtered-workers", str(args.workers),
@@ -152,6 +154,9 @@ def build_background90d_cmd(
         "--seed", str(args.seed),
         "--kinematic-cache", args.kinematic_cache,
         "--ecrit-root", ecrit_root if ecrit_root is not None else args.ecrit_root,
+        "--kernel-npz", args.kernel_npz,
+        "--interp-method", "tail-aware",
+        "--kernel-threshold", str(args.empirical_kernel_threshold),
         "--points", *point_args(args.points),
         "--status-interval-s", str(args.status_interval_s),
     ]
@@ -179,6 +184,21 @@ def cmd_validate(args: argparse.Namespace, extra: list[str]) -> int:
     cmd: list[object] = [sys.executable, "validar_corrida.py", args.outdir]
     cmd.extend(extra)
     return run(cmd, label="Validacion de corrida", dry_run=args.dry_run)
+
+
+def cmd_kernel_smoke(args: argparse.Namespace, extra: list[str]) -> int:
+    """Exercise the bundled full-tail predictor at one physical point."""
+    cmd: list[object] = [
+        sys.executable,
+        "modulos/tail_aware_transport.py",
+        "--model", args.kernel_npz,
+        "--L", str(args.length_m),
+        "--E", str(args.energy_gev),
+        "--method", "tail-aware",
+        "--out", args.out,
+    ]
+    cmd.extend(extra)
+    return run(cmd, label="Kernel full-tail tail-aware", dry_run=args.dry_run)
 
 
 def cmd_machin90d(args: argparse.Namespace, extra: list[str]) -> int:
@@ -293,6 +313,17 @@ def build_parser() -> argparse.ArgumentParser:
     validate.add_argument("--dry-run", action="store_true")
     validate.set_defaults(func=cmd_validate)
 
+    kernel_smoke = sub.add_parser(
+        "kernel-smoke",
+        help="Verifica normalizacion, interpolacion y colas del kernel hibrido.",
+    )
+    kernel_smoke.add_argument("--kernel-npz", default=str(DEFAULT_KERNEL))
+    kernel_smoke.add_argument("--length-m", type=float, default=80.0)
+    kernel_smoke.add_argument("--energy-gev", type=float, default=39.67)
+    kernel_smoke.add_argument("--out", default="outputs/kernel_smoke/kernel_L80_E39p67.csv")
+    kernel_smoke.add_argument("--dry-run", action="store_true")
+    kernel_smoke.set_defaults(func=cmd_kernel_smoke)
+
     mach = sub.add_parser("machin90d", help="Corre el pipeline 90 dias Machin con fast-cache y event-MC.")
     mach.add_argument("--outdir", default=str(DEFAULT_PIPELINE_90D_OUT))
     mach.add_argument("--kinematic-cache", default=str(DEFAULT_90D_CACHE))
@@ -301,7 +332,8 @@ def build_parser() -> argparse.ArgumentParser:
     mach.add_argument("--shw-member", default=None)
     mach.add_argument("--points", nargs="+", choices=DEFAULT_POINTS, default=list(DEFAULT_POINTS))
     mach.add_argument("--workers", type=int, default=0, help="0 autodetecta en el orquestador.")
-    mach.add_argument("--empirical-kernel-threshold", type=float, default=0.001)
+    mach.add_argument("--kernel-npz", default=str(DEFAULT_KERNEL))
+    mach.add_argument("--empirical-kernel-threshold", type=float, default=0.0)
     mach.add_argument("--discard-upgoing", action="store_true")
     mach.add_argument("--skip-event-mc", action="store_true")
     mach.add_argument("--force", action="store_true")
@@ -318,6 +350,8 @@ def build_parser() -> argparse.ArgumentParser:
     bg.add_argument("--workers", type=int, default=8)
     bg.add_argument("--sample-probability", type=float, default=1.0)
     bg.add_argument("--seed", type=int, default=12345)
+    bg.add_argument("--kernel-npz", default=str(DEFAULT_KERNEL))
+    bg.add_argument("--empirical-kernel-threshold", type=float, default=0.0)
     bg.add_argument("--force", action="store_true")
     bg.add_argument("--continue-on-existing", action="store_true")
     bg.add_argument("--no-figures", action="store_true")
@@ -341,7 +375,8 @@ def build_parser() -> argparse.ArgumentParser:
     all90d.add_argument("--workers", type=int, default=8)
     all90d.add_argument("--sample-probability", type=float, default=1.0)
     all90d.add_argument("--seed", type=int, default=12345)
-    all90d.add_argument("--empirical-kernel-threshold", type=float, default=0.001)
+    all90d.add_argument("--kernel-npz", default=str(DEFAULT_KERNEL))
+    all90d.add_argument("--empirical-kernel-threshold", type=float, default=0.0)
     all90d.add_argument("--discard-upgoing", action="store_true")
     all90d.add_argument("--skip-event-mc", action="store_true")
     all90d.add_argument("--force", action="store_true")

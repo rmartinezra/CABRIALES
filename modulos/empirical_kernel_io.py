@@ -1,12 +1,18 @@
 #!/usr/bin/env python3
-"""Shared loader for empirical angular-migration kernel libraries."""
+"""Shared loading and tail-aware interpolation for empirical MCS kernels."""
 from __future__ import annotations
 
 import os
+from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
+
+try:
+    from tail_aware_transport import LocalQuantileTransport, estimate_t50, load_npz
+except ModuleNotFoundError:  # pragma: no cover - package import
+    from modulos.tail_aware_transport import LocalQuantileTransport, estimate_t50, load_npz
 
 
 REQUIRED_KERNEL_KEYS = (
@@ -16,6 +22,20 @@ REQUIRED_KERNEL_KEYS = (
     "L_m",
     "E_in_GeV",
     "clean_for_kernel",
+)
+
+TAIL_AWARE_REQUIRED_KEYS = (
+    "full_tail_edges_mrad",
+    "full_tail_L_m",
+    "full_tail_T50_GeV",
+    "full_tail_transport_features",
+    "full_tail_transport_quantile_levels",
+    "full_tail_transport_abs_quantiles_mrad",
+    "full_tail_transport_L_m",
+    "full_tail_transport_E_in_GeV",
+    "full_tail_transport_E_over_T50",
+    "full_tail_transport_source_families",
+    "full_tail_transport_probabilities",
 )
 
 
@@ -51,10 +71,10 @@ def _pick_hybrid_family(files: set[str], requested: str | None) -> str:
             f"Available families: {families}"
         )
 
-    if "core" in families:
-        return "core"
     if "full_tail" in families:
         return "full_tail"
+    if "core" in families:
+        return "core"
     return families[0]
 
 
@@ -125,3 +145,132 @@ def load_empirical_kernel_library(
         E_in_GeV=E_in_GeV,
         clean_for_kernel=clean_for_kernel,
     )
+
+
+@dataclass(frozen=True)
+class TailAwareKernelPrediction:
+    centers_mrad: np.ndarray
+    probability_per_bin: np.ndarray
+    used_nearest_fallback: bool
+    outside_domain: bool
+    valid: bool
+    interpolation_mode: str
+    tail_policy: str
+
+
+class TailAwareEmpiricalKernel:
+    """Predict normalized full-tail kernels without smoothing away rare tails.
+
+    The body is interpolated through inverse-CDF transport. Beyond 250 mrad it
+    transitions to local measured histograms and uses them fully at 300 mrad.
+    This preserves non-Gaussian and hard-scattering tails out to +/-1600 mrad.
+    """
+
+    method = "tail-aware"
+    tail_start_mrad = 250.0
+    tail_full_mrad = 300.0
+    tail_interp = "linear"
+
+    def __init__(
+        self,
+        npz_path: str | Path,
+        *,
+        k_nearest: int = 18,
+        energy_cache_dlog: float = 0.0,
+        max_cache_items: int = 512,
+    ) -> None:
+        self.path = Path(npz_path)
+        model = load_npz(self.path)
+        missing = [key for key in TAIL_AWARE_REQUIRED_KEYS if key not in model]
+        if missing:
+            raise KeyError(
+                f"Kernel {self.path} does not contain the tail-aware transport model. "
+                f"Missing keys: {missing}"
+            )
+        self._model = model
+        self._transport = LocalQuantileTransport(model, k_nearest=k_nearest)
+        self.kernel_family = "full_tail_transport"
+        self.edges_mrad = self._transport.edges.copy()
+        self.centers_mrad = self._transport.centers.copy()
+        self.widths_mrad = np.diff(self.edges_mrad)
+        self.transport_L_min_m = float(np.min(self._transport.L))
+        self.transport_L_max_m = float(np.max(self._transport.L))
+        self.transport_E_min_GeV = float(np.min(self._transport.E))
+        self.transport_E_max_GeV = float(np.max(self._transport.E))
+        self.energy_cache_dlog = float(energy_cache_dlog)
+        self.max_cache_items = max(0, int(max_cache_items))
+        self._prediction_cache: OrderedDict[tuple[float, int], TailAwareKernelPrediction] = OrderedDict()
+
+    def _cache_key_and_energy(self, L_m: float, E_GeV: float) -> tuple[tuple[float, int] | None, float]:
+        if self.energy_cache_dlog <= 0.0 or self.max_cache_items <= 0:
+            return None, float(E_GeV)
+        energy_key = int(round(np.log(float(E_GeV)) / self.energy_cache_dlog))
+        energy_use = float(np.exp(energy_key * self.energy_cache_dlog))
+        return (round(float(L_m), 6), energy_key), energy_use
+
+    def predict_kernel(self, L_m: float, E_GeV: float) -> TailAwareKernelPrediction:
+        if not (np.isfinite(L_m) and np.isfinite(E_GeV) and L_m > 0.0 and E_GeV > 0.0):
+            return TailAwareKernelPrediction(
+                self.centers_mrad.copy(),
+                np.zeros_like(self.centers_mrad),
+                False,
+                False,
+                False,
+                "invalid",
+                "none",
+            )
+
+        cache_key, energy_use = self._cache_key_and_energy(L_m, E_GeV)
+        if cache_key is not None and cache_key in self._prediction_cache:
+            prediction = self._prediction_cache.pop(cache_key)
+            self._prediction_cache[cache_key] = prediction
+            return prediction
+
+        try:
+            t50 = estimate_t50(self._model, float(L_m))
+            probability, info = self._transport.predict_pdf(
+                float(L_m),
+                energy_use,
+                t50,
+                method=self.method,
+                tail_start_mrad=self.tail_start_mrad,
+                tail_full_mrad=self.tail_full_mrad,
+                tail_interp=self.tail_interp,
+            )
+        except (FloatingPointError, RuntimeError, ValueError):
+            return TailAwareKernelPrediction(
+                self.centers_mrad.copy(),
+                np.zeros_like(self.centers_mrad),
+                False,
+                True,
+                False,
+                "failed",
+                "none",
+            )
+
+        probability = np.asarray(probability, dtype=float)
+        probability[~np.isfinite(probability)] = 0.0
+        probability[probability < 0.0] = 0.0
+        total = float(probability.sum())
+        valid = total > 0.0 and np.isfinite(total)
+        if valid:
+            probability /= total
+            probability = 0.5 * (probability + probability[::-1])
+            probability /= probability.sum()
+
+        mode = str(info.get("mode", "unknown"))
+        outside = mode in {"nearest", "grid_clamped_L"}
+        prediction = TailAwareKernelPrediction(
+            self.centers_mrad.copy(),
+            probability,
+            mode == "nearest",
+            outside,
+            valid,
+            mode,
+            str(info.get("tail_policy", "unknown")),
+        )
+        if cache_key is not None:
+            self._prediction_cache[cache_key] = prediction
+            if len(self._prediction_cache) > self.max_cache_items:
+                self._prediction_cache.popitem(last=False)
+        return prediction

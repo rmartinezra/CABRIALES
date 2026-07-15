@@ -85,6 +85,41 @@ sin modificar resultados:
 python3 cabriales.py full --dry-run
 ```
 
+### Kernel MCS full-tail
+
+CABRIALES incluye y usa por defecto
+`modulos/hybrid_empirical_kernel_library.npz`. La biblioteca combina 402
+simulaciones, una grilla central de `-300` a `300 mrad` y colas completas de
+`-1600` a `1600 mrad`, ambas con bins de `1 mrad`.
+
+El método predeterminado es `tail-aware`: interpola el cuerpo mediante
+transporte de cuantiles y, entre `250` y `300 mrad`, transiciona a histogramas
+medidos locales. Más allá de `300 mrad` conserva directamente esas colas para
+no suavizar el hard scattering. Por la misma razón, el corte de densidad
+predeterminado es cero.
+
+En las rutas evento por evento y espaciales, una caché LRU cuantiza únicamente
+la energía en pasos de `dlog(E)=0.02`. Esa resolución es más fina que la grilla
+de transporte del modelo y evita recalcular miles de veces el mismo PDF; la
+longitud de cada paso no se cuantiza.
+
+La comprobación mínima del modelo es:
+
+```bash
+python3 cabriales.py kernel-smoke
+```
+
+Por defecto evalúa `L=80 m`, `E=39.67 GeV`, comprueba la normalización en la
+salida de terminal y escribe el PDF angular en
+`outputs/kernel_smoke/kernel_L80_E39p67.csv`. Otro modelo puede indicarse con
+`--kernel-npz`; el pipeline completo registra ruta, familia, soporte angular y
+método de interpolación en sus resúmenes.
+
+Actualizar el código no reescribe corridas existentes. Los mapas y resúmenes
+de 90 días creados antes de este cambio conservan el kernel indicado en sus
+propios JSON; deben regenerarse para hacer una comparación científica con el
+modelo full-tail.
+
 El cache cinemático de 90 días se busca en este orden:
 
 1. variable de entorno `CABRIALES_90D_CACHE`;
@@ -266,7 +301,8 @@ Supuestos relevantes:
 
 - densidad efectiva de roca configurable, con valor base `2.65 g/cm3`;
 - pérdida de energía basada en tabla de rango/CSDA;
-- kernel empírico de MCS derivado de simulaciones Geant4;
+- kernel empírico híbrido de MCS derivado de simulaciones Geant4, con
+  interpolación `tail-aware` y soporte full-tail de `+/-1600 mrad`;
 - mapas angulares en theta-phi y event-MC rebineado a `2.5 grados` por defecto;
 - flujo CNF normalizado por `1 m2` de superficie de generación;
 - semilla y parámetros de transporte registrados en los resúmenes JSON.

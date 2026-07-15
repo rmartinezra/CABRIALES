@@ -32,7 +32,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from modulos.empirical_kernel_io import load_empirical_kernel_library
+from modulos.empirical_kernel_io import TailAwareEmpiricalKernel, load_empirical_kernel_library
 from modulos.plot_style import apply_scientific_style
 from modulos.shw_io import MUON_MASS_GEV, open_shw_bytes, parse_muon_parts, theta_phi_from_momentum
 
@@ -184,7 +184,17 @@ def load_grid(ecrit_csv: Path, point: str, theta_min: float | None, theta_max: f
 
 
 class EmpiricalKernelModel:
-    def __init__(self, npz_path: Path, interp_method: str = "linear", rbf_smoothing: float = 0.0) -> None:
+    def __init__(self, npz_path: Path, interp_method: str = "tail-aware", rbf_smoothing: float = 0.0) -> None:
+        self.tail_aware = None
+        if interp_method == "tail-aware":
+            self.tail_aware = TailAwareEmpiricalKernel(npz_path, energy_cache_dlog=0.02)
+            self.kernel_family = self.tail_aware.kernel_family
+            self.centers_mrad = self.tail_aware.centers_mrad
+            self.edges_mrad = self.tail_aware.edges_mrad
+            self.widths_mrad = self.tail_aware.widths_mrad
+            self.interp_method = interp_method
+            self.rbf_smoothing = rbf_smoothing
+            return
         lib = load_empirical_kernel_library(npz_path)
         self.kernel_family = lib.family
         self.centers_mrad = lib.centers_mrad
@@ -242,6 +252,15 @@ class EmpiricalKernelModel:
         return p / s, True
 
     def predict_kernel(self, L_m: float, E_GeV: float) -> KernelPrediction:
+        if self.tail_aware is not None:
+            pred = self.tail_aware.predict_kernel(L_m, E_GeV)
+            return KernelPrediction(
+                pred.centers_mrad,
+                pred.probability_per_bin,
+                pred.used_nearest_fallback,
+                pred.outside_domain,
+                pred.valid,
+            )
         if (not np.isfinite(L_m)) or (not np.isfinite(E_GeV)) or L_m <= 0.0 or E_GeV <= 0.0:
             return KernelPrediction(self.centers_mrad.copy(), np.zeros_like(self.centers_mrad), False, False, False)
         q = np.array([math.log(float(L_m)), math.log(float(E_GeV) / float(L_m))], dtype=float)
@@ -505,9 +524,14 @@ def parser() -> argparse.ArgumentParser:
     ap.add_argument("--shw-format", default="auto", choices=["auto", "arti12", "cnf9"])
     ap.add_argument("--shw-member", default=None)
     ap.add_argument("--ecrit-csv", type=Path, required=True)
-    ap.add_argument("--kernel-library", type=Path, required=True)
+    ap.add_argument(
+        "--kernel-library",
+        type=Path,
+        default=REPO_ROOT / "modulos/hybrid_empirical_kernel_library.npz",
+        help="Empirical kernel library (default: bundled hybrid full-tail model).",
+    )
     ap.add_argument("--outdir", type=Path, required=True)
-    ap.add_argument("--interp-method", choices=["linear", "rbf_linear", "nearest"], default="linear")
+    ap.add_argument("--interp-method", choices=["tail-aware", "linear", "rbf_linear", "nearest"], default="tail-aware")
     ap.add_argument("--rbf-smoothing", type=float, default=0.0)
     ap.add_argument("--kernel-threshold", type=float, default=0.0)
     ap.add_argument("--theta-min", type=float, default=60.0)
