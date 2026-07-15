@@ -1,0 +1,58 @@
+# ================================================================
+# TestEm5: muon transmission and MCS close to the CSDA threshold
+# Generated from this template by generate_near_threshold_macros.py
+#
+# IMPORTANT:
+#   /gun/energy is the MUON KINETIC ENERGY.
+#   One macro = one (rock length, energy, charge) configuration.
+# ================================================================
+
+/control/cout/ignoreThreadsExcept 0
+/control/verbose 1
+/run/verbose 1
+/process/em/verbose 0
+
+# ---------------- Geometry ----------------
+# Vacuum world avoids adding scattering outside the rock slab.
+/testem/det/setWorldMat G4_Galactic
+/testem/det/setAbsMat __MATERIAL__
+/testem/det/setAbsThick __L_M__ m
+/testem/det/setAbsYZ __ABS_YZ_M__ m
+/testem/det/setWorldX __WORLD_X_M__ m
+/testem/det/setWorldYZ __WORLD_YZ_M__ m
+
+# ---------------- Physics -----------------
+/testem/phys/addPhysics emstandard_opt4
+/run/setCut __CUT_CM__ cm
+/run/initialize
+
+# ---------------- Primary -----------------
+/testem/gun/setDefault
+/gun/particle __PARTICLE__
+/gun/energy __E_GEV__ GeV
+
+# ---------------- Histograms --------------
+/analysis/setFileName __OUTNAME__
+
+# h10: transmitted charged-particle kinetic energy at world exit
+/analysis/h1/set 10 400 0.0 __E_GEV__ GeV
+
+# h12: transmitted charged-particle space angle
+/analysis/h1/set 12 400 0.0 __ANGLE_MAX_MRAD__ mrad
+
+# h13: transmitted primary projected angle
+/analysis/h1/set 13 800 -__ANGLE_MAX_MRAD__ __ANGLE_MAX_MRAD__ mrad
+
+# h14: projected position at world exit
+/analysis/h1/set 14 800 -__POS_MAX_M__ __POS_MAX_M__ m
+
+# h15: radius at world exit
+/analysis/h1/set 15 400 0.0 __RADIUS_MAX_M__ m
+
+# We only need the primary-muon transport for this pilot.
+# Energy transferred to killed secondaries remains accounted for locally.
+/testem/stack/killSecondaries
+
+/random/setSeeds __SEED1__ __SEED2__
+/run/printProgress __PRINT_PROGRESS__
+/run/beamOn __N_EVENTS__

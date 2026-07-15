@@ -40,15 +40,15 @@ fuera de Git por su tamaño.
 
 | Geometría DEM y abanicos | Muograma filtrado dentro del volcán |
 |---|---|
-| ![DEM y abanicos](docs/figures/cabriales_dem_fans.png) | ![Muograma filtrado P1](docs/figures/cabriales_inside_volcano_filtered_p1.png) |
+| ![DEM y abanicos](../imagenes/00_readme/cabriales_dem_fans.png) | ![Muograma filtrado P1](../imagenes/00_readme/cabriales_inside_volcano_filtered_p1.png) |
 
 | MC evento por evento | Origen externo de in-scattering espacial |
 |---|---|
-| ![MC evento por evento P1](docs/figures/cabriales_event_mc_p1.png) | ![Origen externo P1](docs/figures/cabriales_in_scattering_source_p1.png) |
+| ![MC evento por evento P1](../imagenes/00_readme/cabriales_event_mc_p1.png) | ![Origen externo P1](../imagenes/00_readme/cabriales_in_scattering_source_p1.png) |
 
 ## Materiales para artículo
 
-La carpeta [articulo_prims/](articulo_prims/) reúne una instantánea curada de
+La carpeta [articulo_prims/](../) reúne una instantánea curada de
 los README, 33 scripts, 37 figuras y los resúmenes numéricos de los cuatro
 puntos. Incluye además un índice científico y un prompt preparado para redactar
 el artículo sin confundir el escalado ideal por superficie con una tasa del

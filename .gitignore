@@ -44,6 +44,7 @@ orchestrator_stdout.log
 *.pdf
 !docs/figures/
 !docs/figures/*.png
+!articulo_prims/imagenes/**/*.png
 
 # Keep small reference tables under data/, but ignore raw/generated payloads there.
 data/*
