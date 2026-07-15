@@ -9,32 +9,58 @@ and then executes them from the repository root.
 from __future__ import annotations
 
 import argparse
+import json
+import os
 import shlex
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Iterable, Sequence
+
+from modulos.progress import format_duration
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 DEFAULT_POINTS = ("P1", "P2", "P4", "P5")
-DEFAULT_90D_CACHE = Path("/home/rafael/proyectos/CNF/muon-cnf-toolkit/machin90dia_kinematic_cache")
 DEFAULT_PIPELINE_90D_OUT = Path("run_machin90dia_allpoints_full")
 DEFAULT_BACKGROUND_90D_OUT = Path(
-    "run_machin90dia_p1_fastcache/10_in_scattering_background/"
-    "machin90d_4points_volcano_surface_workers8"
+    DEFAULT_PIPELINE_90D_OUT
+    / "10_in_scattering_background"
+    / "machin90d_4points_volcano_surface_workers8"
 )
+
+
+def detect_default_90d_cache() -> Path:
+    """Prefer an explicit env var, then local and legacy cache locations."""
+    configured = os.environ.get("CABRIALES_90D_CACHE")
+    if configured:
+        return Path(configured).expanduser()
+    candidates = (
+        PROJECT_ROOT / "data" / "cache" / "machin90dia_kinematic_cache",
+        PROJECT_ROOT.parent / "CNF" / "muon-cnf-toolkit" / "machin90dia_kinematic_cache",
+    )
+    return next((path for path in candidates if (path / "manifest.json").is_file()), candidates[0])
+
+
+DEFAULT_90D_CACHE = detect_default_90d_cache()
 
 
 def q(cmd: Sequence[object]) -> str:
     return " ".join(shlex.quote(str(part)) for part in cmd)
 
 
-def run(cmd: Sequence[object], *, dry_run: bool = False) -> int:
-    print("\n$ " + q(cmd), flush=True)
+def run(cmd: Sequence[object], *, label: str, dry_run: bool = False) -> int:
+    """Run one workflow step and keep terminal state concise and explicit."""
+    print(f"\n[START] {label}", flush=True)
+    print("$ " + q(cmd), flush=True)
     if dry_run:
+        print(f"[DRY-RUN] {label}", flush=True)
         return 0
+    started = time.monotonic()
     proc = subprocess.run([str(part) for part in cmd], cwd=PROJECT_ROOT)
+    state = "OK" if proc.returncode == 0 else f"ERROR rc={proc.returncode}"
+    print(f"[{state}] {label} | elapsed={format_duration(time.monotonic() - started)}", flush=True)
     return int(proc.returncode)
 
 
@@ -56,6 +82,7 @@ def build_smoke_cmd(args: argparse.Namespace, extra: list[str]) -> list[object]:
         "orquestador_machin.py",
         "--profile", "bariloche-smoke",
         "--outdir", args.outdir,
+        "--status-interval-s", str(args.status_interval_s),
     ]
     append_force(cmd, args.force)
     cmd.extend(extra)
@@ -94,6 +121,7 @@ def build_machin90d_cmd(args: argparse.Namespace, extra: list[str]) -> list[obje
         "--parallel-jobs", str(args.workers),
         "--inside-filtered-workers", str(args.workers),
         "--event-mc-workers", str(args.workers),
+        "--status-interval-s", str(args.status_interval_s),
     ]
     if shw is not None:
         cmd.extend(["--shw", shw, "--shw-format", args.shw_format])
@@ -125,6 +153,7 @@ def build_background90d_cmd(
         "--kinematic-cache", args.kinematic_cache,
         "--ecrit-root", ecrit_root if ecrit_root is not None else args.ecrit_root,
         "--points", *point_args(args.points),
+        "--status-interval-s", str(args.status_interval_s),
     ]
     if args.no_figures:
         cmd.append("--no-figures")
@@ -136,45 +165,112 @@ def build_background90d_cmd(
 
 
 def cmd_smoke(args: argparse.Namespace, extra: list[str]) -> int:
-    rc = run(build_smoke_cmd(args, extra), dry_run=args.dry_run)
+    rc = run(build_smoke_cmd(args, extra), label="Smoke test", dry_run=args.dry_run)
     if rc != 0 or args.no_validate:
         return rc
-    return run([sys.executable, "validar_corrida.py", args.outdir], dry_run=args.dry_run)
+    return run(
+        [sys.executable, "validar_corrida.py", args.outdir],
+        label="Validacion del smoke test",
+        dry_run=args.dry_run,
+    )
 
 
 def cmd_validate(args: argparse.Namespace, extra: list[str]) -> int:
     cmd: list[object] = [sys.executable, "validar_corrida.py", args.outdir]
     cmd.extend(extra)
-    return run(cmd, dry_run=args.dry_run)
+    return run(cmd, label="Validacion de corrida", dry_run=args.dry_run)
 
 
 def cmd_machin90d(args: argparse.Namespace, extra: list[str]) -> int:
-    rc = run(build_machin90d_cmd(args, extra), dry_run=args.dry_run)
+    rc = run(build_machin90d_cmd(args, extra), label="Pipeline Machin 90 dias", dry_run=args.dry_run)
     if rc != 0 or args.no_validate:
         return rc
-    return run([sys.executable, "validar_corrida.py", args.outdir], dry_run=args.dry_run)
+    return run(
+        [sys.executable, "validar_corrida.py", args.outdir],
+        label="Validacion del pipeline",
+        dry_run=args.dry_run,
+    )
+
+
+def validate_background(out_root: Path | str, points: Iterable[str], *, dry_run: bool) -> int:
+    """Check that the reduced four-point campaign finished and is readable."""
+    summary_path = PROJECT_ROOT / Path(out_root) / "four_point_summary.json"
+    print(f"\n[START] Validacion del background | summary={summary_path}", flush=True)
+    if dry_run:
+        print("[DRY-RUN] Validacion del background", flush=True)
+        return 0
+    if not summary_path.is_file():
+        print(f"[ERROR] Falta el resumen del background: {summary_path}", flush=True)
+        return 2
+    with summary_path.open(encoding="utf-8") as handle:
+        summary = json.load(handle)
+    expected = set(points)
+    completed = {str(row.get("point")) for row in summary.get("rows", []) if row.get("status") == "ok"}
+    missing = sorted(expected - completed)
+    if summary.get("status") != "ok" or missing:
+        print(
+            f"[ERROR] Background incompleto | status={summary.get('status')} "
+            f"| puntos_faltantes={missing}",
+            flush=True,
+        )
+        return 2
+    accepted = (summary.get("totals") or {}).get("weighted_accepted_count")
+    print(f"[OK] Background completo | puntos={len(completed)} | accepted={accepted}", flush=True)
+    return 0
 
 
 def cmd_background90d(args: argparse.Namespace, extra: list[str]) -> int:
-    return run(build_background90d_cmd(args, extra), dry_run=args.dry_run)
+    rc = run(
+        build_background90d_cmd(args, extra),
+        label="Background espacial 90 dias",
+        dry_run=args.dry_run,
+    )
+    if rc != 0 or args.no_validate:
+        return rc
+    return validate_background(args.out_root, args.points, dry_run=args.dry_run)
 
 
-def cmd_all90d(args: argparse.Namespace, extra: list[str]) -> int:
+def cmd_full(args: argparse.Namespace, extra: list[str]) -> int:
+    print("CABRIALES FULL: pipeline -> background espacial -> validacion", flush=True)
     # Keep pass-through arguments on the pipeline step, where most framework flags live.
     pipeline_args = argparse.Namespace(**vars(args))
     pipeline_args.outdir = args.pipeline_outdir
     pipeline_args.no_validate = True
-    rc = run(build_machin90d_cmd(pipeline_args, extra), dry_run=args.dry_run)
+    rc = run(
+        build_machin90d_cmd(pipeline_args, extra),
+        label="FULL 1/3 - Pipeline Machin 90 dias",
+        dry_run=args.dry_run,
+    )
     if rc != 0:
         return rc
 
     background_args = argparse.Namespace(**vars(args))
     background_args.out_root = args.background_out_root
     background_args.ecrit_root = str(Path(args.pipeline_outdir) / "03_ecrit")
-    rc = run(build_background90d_cmd(background_args, []), dry_run=args.dry_run)
+    rc = run(
+        build_background90d_cmd(background_args, []),
+        label="FULL 2/3 - Background espacial",
+        dry_run=args.dry_run,
+    )
     if rc != 0 or args.no_validate:
         return rc
-    return run([sys.executable, "validar_corrida.py", args.pipeline_outdir], dry_run=args.dry_run)
+    rc = run(
+        [sys.executable, "validar_corrida.py", args.pipeline_outdir],
+        label="FULL 3/3 - Validacion del pipeline",
+        dry_run=args.dry_run,
+    )
+    if rc != 0:
+        return rc
+    return validate_background(args.background_out_root, args.points, dry_run=args.dry_run)
+
+
+def add_progress_argument(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--status-interval-s",
+        type=float,
+        default=30.0,
+        help="Segundos entre actualizaciones de progreso durante etapas largas; 0 las desactiva.",
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -189,6 +285,7 @@ def build_parser() -> argparse.ArgumentParser:
     smoke.add_argument("--force", action="store_true")
     smoke.add_argument("--no-validate", action="store_true")
     smoke.add_argument("--dry-run", action="store_true")
+    add_progress_argument(smoke)
     smoke.set_defaults(func=cmd_smoke)
 
     validate = sub.add_parser("validate", help="Valida una corrida existente con validar_corrida.py.")
@@ -210,6 +307,7 @@ def build_parser() -> argparse.ArgumentParser:
     mach.add_argument("--force", action="store_true")
     mach.add_argument("--no-validate", action="store_true")
     mach.add_argument("--dry-run", action="store_true")
+    add_progress_argument(mach)
     mach.set_defaults(func=cmd_machin90d)
 
     bg = sub.add_parser("background90d", help="Corre in-scattering espacial 90 dias para P1/P2/P4/P5.")
@@ -223,10 +321,16 @@ def build_parser() -> argparse.ArgumentParser:
     bg.add_argument("--force", action="store_true")
     bg.add_argument("--continue-on-existing", action="store_true")
     bg.add_argument("--no-figures", action="store_true")
+    bg.add_argument("--no-validate", action="store_true")
     bg.add_argument("--dry-run", action="store_true")
+    add_progress_argument(bg)
     bg.set_defaults(func=cmd_background90d)
 
-    all90d = sub.add_parser("all90d", help="Corre pipeline 90 dias y luego background espacial.")
+    all90d = sub.add_parser(
+        "full",
+        aliases=["all90d"],
+        help="Corre y valida todo: pipeline 90 dias y background espacial.",
+    )
     all90d.add_argument("--pipeline-outdir", default=str(DEFAULT_PIPELINE_90D_OUT))
     all90d.add_argument("--background-out-root", default=str(DEFAULT_PIPELINE_90D_OUT / "10_in_scattering_background" / "machin90d_4points_volcano_surface_workers8"))
     all90d.add_argument("--kinematic-cache", default=str(DEFAULT_90D_CACHE))
@@ -245,7 +349,8 @@ def build_parser() -> argparse.ArgumentParser:
     all90d.add_argument("--no-figures", action="store_true")
     all90d.add_argument("--no-validate", action="store_true")
     all90d.add_argument("--dry-run", action="store_true")
-    all90d.set_defaults(func=cmd_all90d)
+    add_progress_argument(all90d)
+    all90d.set_defaults(func=cmd_full)
 
     return ap
 

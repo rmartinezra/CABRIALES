@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import os
 import subprocess
 import sys
 import time
@@ -43,14 +44,23 @@ DEFAULT_CONFIGS = [
 
 def parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(description="Run spatial in-scattering sensitivity campaign with chunk workers.")
-    ap.add_argument("--out-root", type=Path, default=Path("run_machin90dia_p1_fastcache/10_in_scattering_background/sensitivity_p50_workers8"))
+    ap.add_argument("--out-root", type=Path, default=Path("run_machin90dia_allpoints_full/10_in_scattering_background/sensitivity_p50_workers8"))
     ap.add_argument("--workers", type=int, default=8)
     ap.add_argument("--sample-probability", type=float, default=0.5)
     ap.add_argument("--head", type=int, default=0)
     ap.add_argument("--only", nargs="*", default=None, help="Optional config names to run.")
     ap.add_argument("--force", action="store_true")
     ap.add_argument("--no-figures", action="store_true")
-    ap.add_argument("--kinematic-cache", type=Path, default=Path("/home/rafael/proyectos/CNF/muon-cnf-toolkit/machin90dia_kinematic_cache"))
+    ap.add_argument(
+        "--kinematic-cache",
+        type=Path,
+        default=Path(
+            os.environ.get(
+                "CABRIALES_90D_CACHE",
+                "/home/rafael/proyectos/CNF/muon-cnf-toolkit/machin90dia_kinematic_cache",
+            )
+        ),
+    )
     ap.add_argument("--kernel-npz", type=Path, default=Path("modulos/empirical_kernel_library.npz"))
     ap.add_argument("--acceptance-map", type=Path, default=Path("run_machin90dia_p1_fastcache/03_ecrit/ecrit_table_P1.csv"))
     ap.add_argument("--length-map", type=Path, default=Path("run_machin90dia_p1_fastcache/03_ecrit/ecrit_table_P1.csv"))

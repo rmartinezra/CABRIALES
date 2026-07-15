@@ -15,13 +15,17 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import os
+import shlex
 import shutil
 import subprocess
 import sys
 import time
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import asdict, dataclass
 from pathlib import Path
+
+from progress import format_duration
 
 
 POINTS = ("P1", "P2", "P4", "P5")
@@ -51,14 +55,23 @@ def parser() -> argparse.ArgumentParser:
     ap.add_argument(
         "--out-root",
         type=Path,
-        default=Path("run_machin90dia_p1_fastcache/10_in_scattering_background/machin90d_4points_volcano_surface_workers8"),
+        default=Path("run_machin90dia_allpoints_full/10_in_scattering_background/machin90d_4points_volcano_surface_workers8"),
     )
     ap.add_argument("--points", nargs="+", choices=POINTS, default=list(POINTS))
     ap.add_argument("--workers", type=int, default=8)
     ap.add_argument("--force", action="store_true", help="Remove existing per-point output before running it.")
     ap.add_argument("--no-figures", action="store_true")
     ap.add_argument("--continue-on-existing", action="store_true", help="Reuse already reduced points when present.")
-    ap.add_argument("--kinematic-cache", type=Path, default=Path("/home/rafael/proyectos/CNF/muon-cnf-toolkit/machin90dia_kinematic_cache"))
+    ap.add_argument(
+        "--kinematic-cache",
+        type=Path,
+        default=Path(
+            os.environ.get(
+                "CABRIALES_90D_CACHE",
+                "/home/rafael/proyectos/CNF/muon-cnf-toolkit/machin90dia_kinematic_cache",
+            )
+        ),
+    )
     ap.add_argument("--kernel-npz", type=Path, default=Path("modulos/empirical_kernel_library.npz"))
     ap.add_argument("--ecrit-root", type=Path, default=Path("run_machin90dia_allpoints_full/03_ecrit"))
     ap.add_argument("--hgt-dir", default="data")
@@ -78,6 +91,12 @@ def parser() -> argparse.ArgumentParser:
     ap.add_argument("--min-survival-rock-m", type=float, default=100.0)
     ap.add_argument("--kernel-scale", type=float, default=1.0)
     ap.add_argument("--disable-scattering", action="store_true")
+    ap.add_argument(
+        "--status-interval-s",
+        type=float,
+        default=30.0,
+        help="Seconds between progress messages while chunk workers are active; 0 disables heartbeats.",
+    )
     return ap
 
 
@@ -112,11 +131,42 @@ def point_seed(base_seed: int, point: str) -> int:
     return base_seed + 100000 * POINTS.index(point)
 
 
-def run_command(cmd: list[str], log_path: Path, cwd: Path) -> int:
+def run_command(
+    cmd: list[str],
+    log_path: Path,
+    cwd: Path,
+    *,
+    label: str | None = None,
+    status_interval_s: float = 0.0,
+) -> int:
+    """Run a command with full output in a log and optional terminal heartbeat."""
     log_path.parent.mkdir(parents=True, exist_ok=True)
+    started = time.monotonic()
+    if label:
+        print(f"[START] {label} | log={log_path}", flush=True)
     with log_path.open("w", encoding="utf-8") as log:
-        proc = subprocess.run(cmd, cwd=str(cwd), stdout=log, stderr=subprocess.STDOUT, text=True)
-    return int(proc.returncode)
+        proc = subprocess.Popen(cmd, cwd=str(cwd), stdout=log, stderr=subprocess.STDOUT)
+        while True:
+            if status_interval_s <= 0:
+                returncode = proc.wait()
+                break
+            try:
+                returncode = proc.wait(timeout=status_interval_s)
+                break
+            except subprocess.TimeoutExpired:
+                print(
+                    f"[RUNNING] {label or Path(cmd[0]).name} "
+                    f"| elapsed={format_duration(time.monotonic() - started)} "
+                    f"| log={log_path}",
+                    flush=True,
+                )
+    if label:
+        state = "OK" if returncode == 0 else f"ERROR rc={returncode}"
+        print(
+            f"[{state}] {label} | elapsed={format_duration(time.monotonic() - started)}",
+            flush=True,
+        )
+    return int(returncode)
 
 
 def path_arg(root: Path, p: Path) -> str:
@@ -172,7 +222,8 @@ def summarize_point(point_dir: Path, point: str) -> dict[str, object]:
     summary_path = point_dir / "reduced" / "spatial_in_scattering_summary.json"
     if not summary_path.exists():
         return {"point": point, "status": "missing_summary", "summary_json": str(summary_path)}
-    summary = json.load(open(summary_path, encoding="utf-8"))
+    with summary_path.open(encoding="utf-8") as handle:
+        summary = json.load(handle)
     stats = summary.get("stats", {})
     area = summary.get("area_effective_estimate") or {}
     return {
@@ -217,24 +268,58 @@ def run_point(root: Path, args: argparse.Namespace, cfg: TransportConfig, point:
     }
     (point_dir / "campaign_config.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
 
-    print(f"[RUN] {point}: workers={args.workers} seed={point_seed(cfg.base_seed, point)} p={cfg.sample_probability}")
-    t0 = time.time()
-    futures = []
+    print(
+        f"[RUN] {point}: workers={args.workers} "
+        f"seed={point_seed(cfg.base_seed, point)} p={cfg.sample_probability}",
+        flush=True,
+    )
+    t0 = time.monotonic()
     with ThreadPoolExecutor(max_workers=args.workers) as executor:
+        future_to_worker = {}
         for worker in range(args.workers):
             chunk_dir = chunks_root / f"w{worker:02d}"
             cmd = build_worker_cmd(root, args, cfg, point, worker, chunk_dir)
             chunk_dir.mkdir(parents=True, exist_ok=True)
-            (chunk_dir / "command.txt").write_text(" ".join(cmd) + "\n", encoding="utf-8")
-            futures.append((worker, executor.submit(run_command, cmd, chunk_dir / "run.log", root)))
+            (chunk_dir / "command.txt").write_text(shlex.join(cmd) + "\n", encoding="utf-8")
+            future = executor.submit(run_command, cmd, chunk_dir / "run.log", root)
+            future_to_worker[future] = worker
+
         failed = []
-        for worker, future in futures:
-            rc = future.result()
-            if rc != 0:
-                failed.append((worker, rc))
+        completed = 0
+        pending = set(future_to_worker)
+        while pending:
+            timeout = args.status_interval_s if args.status_interval_s > 0 else None
+            done, pending = wait(pending, timeout=timeout, return_when=FIRST_COMPLETED)
+            if not done:
+                print(
+                    f"[RUNNING] {point}: chunks={completed}/{args.workers} "
+                    f"elapsed={format_duration(time.monotonic() - t0)}",
+                    flush=True,
+                )
+                continue
+            for future in done:
+                worker = future_to_worker[future]
+                try:
+                    rc = future.result()
+                except Exception as exc:  # Preserve the worker identity in terminal output.
+                    print(f"[ERROR] {point}/w{worker:02d}: {exc}", flush=True)
+                    rc = 1
+                if rc != 0:
+                    failed.append((worker, rc))
+                completed += 1
+            print(
+                f"[PROGRESS] {point}: chunks={completed}/{args.workers} "
+                f"elapsed={format_duration(time.monotonic() - t0)}",
+                flush=True,
+            )
     if failed:
         print(f"[FAIL] {point}: chunk failures {failed}")
-        return {"point": point, "status": "failed_chunks", "failures": failed, "elapsed_s": time.time() - t0}
+        return {
+            "point": point,
+            "status": "failed_chunks",
+            "failures": failed,
+            "elapsed_s": time.monotonic() - t0,
+        }
 
     input_dirs = [chunks_root / f"w{i:02d}" for i in range(args.workers)]
     reduce_cmd = [
@@ -247,12 +332,22 @@ def run_point(root: Path, args: argparse.Namespace, cfg: TransportConfig, point:
     ]
     if args.no_figures:
         reduce_cmd.append("--no-figures")
-    rc = run_command(reduce_cmd, point_dir / "reduce.log", root)
+    rc = run_command(
+        reduce_cmd,
+        point_dir / "reduce.log",
+        root,
+        label=f"{point}/reduce",
+        status_interval_s=args.status_interval_s,
+    )
     if rc != 0:
         print(f"[FAIL] {point}: reducer rc={rc}")
-        return {"point": point, "status": "failed_reduce", "elapsed_s": time.time() - t0}
+        return {
+            "point": point,
+            "status": "failed_reduce",
+            "elapsed_s": time.monotonic() - t0,
+        }
     row = summarize_point(point_dir, point)
-    row["elapsed_s"] = time.time() - t0
+    row["elapsed_s"] = time.monotonic() - t0
     print(
         f"[OK] {point}: accepted={row.get('weighted_accepted_count')} "
         f"area/day={row.get('area_scaled_count_per_day')} elapsed={row['elapsed_s']/60.0:.1f} min"
@@ -317,6 +412,8 @@ def main(argv=None) -> int:
     args = parser().parse_args(argv)
     if args.workers <= 0:
         raise ValueError("--workers must be positive")
+    if args.status_interval_s < 0:
+        raise ValueError("--status-interval-s must be non-negative")
     if args.force and args.continue_on_existing:
         raise ValueError("--force and --continue-on-existing cannot be used together")
     root = repo_root()
@@ -339,9 +436,10 @@ def main(argv=None) -> int:
         kernel_scale=args.kernel_scale,
         disable_scattering=args.disable_scattering,
     )
-    started = time.time()
+    started = time.monotonic()
     rows: list[dict[str, object]] = []
-    for point in args.points:
+    for index, point in enumerate(args.points, start=1):
+        print(f"[CAMPAIGN {index}/{len(args.points)}] point={point}", flush=True)
         row = run_point(root, args, cfg, point)
         rows.append(row)
         write_campaign_summary(args.out_root, rows, cfg, args, root)
@@ -349,7 +447,7 @@ def main(argv=None) -> int:
             print(f"[STOP] {point} did not finish cleanly")
             return 2
     write_campaign_summary(args.out_root, rows, cfg, args, root)
-    print(f"[DONE] four-point campaign elapsed={(time.time() - started) / 60.0:.1f} min")
+    print(f"[DONE] four-point campaign elapsed={format_duration(time.monotonic() - started)}")
     print(f"summary_json={resolve_from_root(root, args.out_root) / 'four_point_summary.json'}")
     print(f"summary_csv={resolve_from_root(root, args.out_root) / 'four_point_summary.csv'}")
     return 0
