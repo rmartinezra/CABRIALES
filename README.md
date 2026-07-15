@@ -1,5 +1,12 @@
 # CABRIALES
 
+```text
+  ____    _    ____  ____  ___    _    _     _____ ____
+ / ___|  / \  | __ )|  _ \|_ _|  / \  | |   | ____/ ___|
+| |     / _ \ |  _ \| |_) || |  / _ \ | |   |  _| \___ \
+| |___ / ___ \| |_) |  _ < | | / ___ \| |___| |___ ___) |
+ \____/_/   \_\____/|_| \_\___/_/   \_\_____|_____|____/
+```
 **Cosmic-ray AI Backpropagation and Ray-tracing with Integrated Angular
 scattering for Low-cost Emulation and Simulation**
 
@@ -8,6 +15,19 @@ filtrar y analizar muones atmosféricos en geometrías volcánicas. El proyecto
 combina trazado de rayos sobre DEM, tablas de energía crítica, mapas angulares
 theta-phi y modelos de dispersión angular para estudiar el Volcán Machín con
 entradas ARTI/CORSIKA o CNF.
+
+## Figuras clave
+
+Estas imágenes son salidas representativas versionadas en `docs/figures/`; las
+corridas completas siguen fuera de Git para no subir datos pesados.
+
+| Geometría DEM y abanicos de visión | Muograma filtrado dentro del volcán |
+|---|---|
+| ![DEM y abanicos de vision](docs/figures/cabriales_dem_fans.png) | ![Muograma filtrado P1 dentro del volcán](docs/figures/cabriales_inside_volcano_filtered_p1.png) |
+
+| MC evento-por-evento con kernel empírico | Origen externo de in-scattering espacial |
+|---|---|
+| ![MC evento por evento P1](docs/figures/cabriales_event_mc_p1.png) | ![Mapa de origen externo por in-scattering P1](docs/figures/cabriales_in_scattering_source_p1.png) |
 
 ## Pipeline directo de muografía para Volcán Machín
 
