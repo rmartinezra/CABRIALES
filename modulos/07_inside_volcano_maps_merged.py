@@ -78,6 +78,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from matplotlib.colors import LogNorm
 from shw_io import open_shw_bytes, parse_muon_parts, shw_stem, stream_size_hint, theta_phi_from_momentum
+from plot_style import apply_scientific_style
 
 
 # ---------------------------------------------------------------------
@@ -98,25 +99,7 @@ MUON_IDS_B = {b"0005", b"0006", b"5", b"6"}
 # Style
 # ---------------------------------------------------------------------
 def setup_style() -> None:
-    plt.rcParams.update({
-        "figure.dpi": 120,
-        "savefig.dpi": 300,
-        "font.size": 10,
-        "axes.labelsize": 11,
-        "axes.titlesize": 11,
-        "xtick.labelsize": 9,
-        "ytick.labelsize": 9,
-        "axes.linewidth": 0.9,
-        "xtick.direction": "in",
-        "ytick.direction": "in",
-        "xtick.top": True,
-        "ytick.right": True,
-        "xtick.major.size": 4,
-        "ytick.major.size": 4,
-        "xtick.minor.size": 2,
-        "ytick.minor.size": 2,
-        "axes.grid": False,
-    })
+    apply_scientific_style()
 
 
 # ---------------------------------------------------------------------

@@ -17,6 +17,7 @@ from pathlib import Path
 import numpy as np
 import matplotlib.pyplot as plt
 from shw_io import open_shw_bytes, parse_muon_parts, stream_size_hint
+from plot_style import apply_scientific_style, finite_percentile, format_angular_axes, style_colorbar, COUNTS_CMAP
 
 # tqdm opcional
 try:
@@ -83,6 +84,7 @@ def solid_angle_per_bin(theta_edges_deg, phi_edges_deg):
     return dcos * dphi
 
 def main():
+    apply_scientific_style()
     ap = argparse.ArgumentParser(description="Heatmap θ–φ (conteo de muones) rápido y en streaming")
     ap.add_argument("--point", required=True, choices=list(POINTS.keys()), help="Punto de observación (P1/P2/P4/P5)")
     ap.add_argument("--shw", required=True, help="Archivo .shw (ARTI 12 cols)")
@@ -191,40 +193,26 @@ def main():
     df_corr.to_csv(csv_corr_path, index=False)
 
     # Plot original: conteos crudos.
-    plt.figure(figsize=(8.6, 6.0))
-    plt.pcolormesh(ph_edges, th_edges, H, shading="flat")
-    # Mostrar 90 -> 60 si theta_max>theta_min
-    if args.theta_max > args.theta_min:
-        plt.ylim(args.theta_max, args.theta_min)
-    else:
-        plt.ylim(args.theta_min, args.theta_max)
-    plt.xlim(args.phi_min, args.phi_max)
-    plt.xlabel("Relative azimuth φ (deg)")
-    plt.ylabel("Zenith θ (deg)")
-    plt.title(f"Muon counts — θ vs φ ({args.point})")
-    cbar = plt.colorbar(); cbar.set_label("Counts")
-    plt.tight_layout()
+    fig, ax = plt.subplots(figsize=(7.2, 5.2), constrained_layout=True)
+    vmax = finite_percentile(H, 99.5, positive_only=True, fallback=max(float(H.max()), 1.0))
+    im = ax.pcolormesh(ph_edges, th_edges, H, shading="flat", cmap=COUNTS_CMAP, vmin=0.0, vmax=vmax, rasterized=True)
+    format_angular_axes(ax, args.theta_min, args.theta_max, args.phi_min, args.phi_max)
+    ax.set_title(f"Muon counts | {args.point} | N={int(H.sum())}")
+    style_colorbar(fig.colorbar(im, ax=ax, shrink=0.92), "Counts")
     png_path = outdir / f"theta_phi_counts_{args.point}.png"
-    plt.savefig(png_path, dpi=180, bbox_inches="tight")
-    plt.close()
+    fig.savefig(png_path)
+    plt.close(fig)
 
     # Plot corregido por ángulo sólido.
-    plt.figure(figsize=(8.6, 6.0))
-    plt.pcolormesh(ph_edges, th_edges, H_domega, shading="flat")
-    # Mostrar 90 -> 60 si theta_max>theta_min
-    if args.theta_max > args.theta_min:
-        plt.ylim(args.theta_max, args.theta_min)
-    else:
-        plt.ylim(args.theta_min, args.theta_max)
-    plt.xlim(args.phi_min, args.phi_max)
-    plt.xlabel("Relative azimuth φ (deg)")
-    plt.ylabel("Zenith θ (deg)")
-    plt.title(f"Muon intensity proxy — θ vs φ ({args.point})")
-    cbar = plt.colorbar(); cbar.set_label(r"Counts sr$^{-1}$")
-    plt.tight_layout()
+    fig, ax = plt.subplots(figsize=(7.2, 5.2), constrained_layout=True)
+    vmax = finite_percentile(H_domega, 99.5, positive_only=True, fallback=None)
+    im = ax.pcolormesh(ph_edges, th_edges, H_domega, shading="flat", cmap=COUNTS_CMAP, vmin=0.0, vmax=vmax, rasterized=True)
+    format_angular_axes(ax, args.theta_min, args.theta_max, args.phi_min, args.phi_max)
+    ax.set_title(f"Muon intensity proxy | {args.point}")
+    style_colorbar(fig.colorbar(im, ax=ax, shrink=0.92), r"Counts sr$^{-1}$")
     png_corr_path = outdir / f"theta_phi_dNdOmega_{args.point}.png"
-    plt.savefig(png_corr_path, dpi=180, bbox_inches="tight")
-    plt.close()
+    fig.savefig(png_corr_path)
+    plt.close(fig)
 
     print(
         f"[OK] Guardado: {png_path.name}, {csv_path.name}, "

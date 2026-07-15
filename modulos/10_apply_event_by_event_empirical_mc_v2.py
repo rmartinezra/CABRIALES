@@ -61,7 +61,16 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from matplotlib.colors import TwoSlopeNorm
-from modulos.shw_io import open_shw_bytes, parse_muon_parts, stream_size_hint, theta_phi_from_momentum
+
+try:
+    from empirical_kernel_io import load_empirical_kernel_library
+    from plot_style import apply_scientific_style
+    from shw_io import open_shw_bytes, parse_muon_parts, stream_size_hint, theta_phi_from_momentum
+except ModuleNotFoundError:  # pragma: no cover
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from empirical_kernel_io import load_empirical_kernel_library
+    from plot_style import apply_scientific_style
+    from shw_io import open_shw_bytes, parse_muon_parts, stream_size_hint, theta_phi_from_momentum
 
 try:
     from scipy.interpolate import LinearNDInterpolator, NearestNDInterpolator, RBFInterpolator
@@ -98,23 +107,7 @@ POINTS = {
 # Small utilities
 # -----------------------------------------------------------------------------
 def setup_style() -> None:
-    plt.rcParams.update({
-        "figure.dpi": 120,
-        "savefig.dpi": 300,
-        "font.size": 10,
-        "axes.labelsize": 11,
-        "axes.titlesize": 11,
-        "xtick.labelsize": 9,
-        "ytick.labelsize": 9,
-        "axes.linewidth": 0.9,
-        "xtick.direction": "in",
-        "ytick.direction": "in",
-        "xtick.top": True,
-        "ytick.right": True,
-        "xtick.major.size": 4,
-        "ytick.major.size": 4,
-        "axes.grid": False,
-    })
+    apply_scientific_style()
 
 
 def azimuth_deg(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
@@ -194,14 +187,15 @@ class KernelPrediction:
 
 class EmpiricalKernelModel:
     def __init__(self, npz_path: Path, interp_method: str = "linear", rbf_smoothing: float = 0.0) -> None:
-        lib = np.load(npz_path)
-        self.centers_mrad = np.asarray(lib["centers_mrad"], dtype=float)
-        self.edges_mrad = np.asarray(lib["edges_mrad"], dtype=float)
+        lib = load_empirical_kernel_library(npz_path)
+        self.kernel_family = lib.family
+        self.centers_mrad = lib.centers_mrad
+        self.edges_mrad = lib.edges_mrad
         self.widths_mrad = np.diff(self.edges_mrad)
-        self.probabilities = np.asarray(lib["probabilities"], dtype=float)
-        self.L_m = np.asarray(lib["L_m"], dtype=float)
-        self.E_in_GeV = np.asarray(lib["E_in_GeV"], dtype=float)
-        self.clean = np.asarray(lib["clean_for_kernel"], dtype=bool)
+        self.probabilities = lib.probabilities
+        self.L_m = lib.L_m
+        self.E_in_GeV = lib.E_in_GeV
+        self.clean = lib.clean_for_kernel
 
         self.interp_method = interp_method
         self.rbf_smoothing = rbf_smoothing
@@ -266,7 +260,7 @@ class EmpiricalKernelModel:
         outside = bool(np.any(q < self.X_min) or np.any(q > self.X_max))
         used_nearest = False
 
-        if self.interp_method == "nearest":
+        if self.interp_method == "nearest" or outside:
             pred = self.nearest(q)
             used_nearest = True
         elif self.interp_method == "linear":
@@ -508,7 +502,8 @@ class ProcessResult:
 
 def process_point(payload: dict) -> ProcessResult:
     point = payload["point"]
-    shw_path = Path(payload["shw_path"])
+    shw_path = Path(payload["shw_path"]) if payload.get("shw_path") else None
+    event_cache_path = Path(payload["event_cache_path"]) if payload.get("event_cache_path") else None
     ecrit_csv = Path(payload["ecrit_csv"])
     outdir = Path(payload["outdir"])
     outdir.mkdir(parents=True, exist_ok=True)
@@ -545,96 +540,121 @@ def process_point(payload: dict) -> ProcessResult:
     n_no_support = 0
     n_energy_nonpositive = 0
 
-    total_bytes = stream_size_hint(shw_path) if shw_path.exists() else 0
-    if not shw_path.exists():
-        raise FileNotFoundError(shw_path)
+    def handle_event(theta: float, phi_rel: float, T: float) -> bool:
+        nonlocal n_in_grid_total, n_in_grid, n_skipped_source_outside_geometry
+        nonlocal n_identity, n_smeared, n_nearest, n_outside, n_no_support, n_energy_nonpositive
 
-    desc = f"event-MC {point}"
-    pbar = tqdm(total=total_bytes, unit="B", unit_scale=True, desc=desc, disable=bool(payload["no_progress"]))
+        i = int(np.searchsorted(grid.theta_edges, theta, side="right") - 1)
+        if i < 0 or i >= len(grid.theta):
+            return False
+        j = int(np.searchsorted(grid.phi_edges, phi_rel, side="right") - 1)
+        if j < 0 or j >= len(grid.phi):
+            return False
+        if not grid.filled[i, j]:
+            return False
 
-    with open_shw_bytes(shw_path, member_name=payload.get("shw_member")) as f:
-        for raw in f:
+        n_in_grid_total += 1
+        if payload["source_mode"] == "inside" and not grid.inside_mask[i, j]:
+            n_skipped_source_outside_geometry += 1
+            return False
+
+        n_in_grid += 1
+        H_in[i, j] += 1
+
+        if T <= 0.0 or not math.isfinite(T):
+            H_out[i, j] += 1
+            n_identity += 1
+            n_energy_nonpositive += 1
+            return True
+
+        if grid.L_grid[i, j] <= 0.0:
+            H_out[i, j] += 1
+            n_identity += 1
+            return True
+
+        k2d = cache.get(i, j, T)
+        if k2d.used_nearest_fallback:
+            n_nearest += 1
+        if k2d.outside_domain:
+            n_outside += 1
+        if not k2d.valid:
+            n_no_support += 1
+
+        if k2d.flat_indices.size == 1:
+            H_out.ravel()[k2d.flat_indices[0]] += 1
+            n_identity += 1
+            return True
+
+        u = rng.random()
+        k = int(np.searchsorted(k2d.cdf, u, side="right"))
+        if k >= len(k2d.flat_indices):
+            k = len(k2d.flat_indices) - 1
+        H_out.ravel()[k2d.flat_indices[k]] += 1
+        n_smeared += 1
+        return True
+
+    if event_cache_path is not None:
+        if not event_cache_path.exists():
+            raise FileNotFoundError(event_cache_path)
+        with np.load(event_cache_path) as data:
+            theta_arr = np.asarray(data["theta_deg"], dtype=float)
+            phi_arr = np.asarray(data["phi_rel_deg"], dtype=float)
+            if "kinetic_GeV" in data:
+                kinetic_arr = np.asarray(data["kinetic_GeV"], dtype=float)
+            else:
+                kinetic_arr = np.asarray(data["total_E_GeV"], dtype=float) - MUON_MASS_GEV
+        total = int(theta_arr.size)
+        pbar = tqdm(total=total, unit="event", desc=f"event-MC cache {point}", disable=bool(payload["no_progress"]))
+        for theta, phi_rel, T in zip(theta_arr, phi_arr, kinetic_arr):
             n_lines += 1
-            pbar.update(len(raw))
-            s = raw.strip()
-            if not s or s.startswith(b"#"):
-                continue
-            parts = s.split()
-            rec = parse_muon_parts(parts, shw_format=payload["shw_format"], only_muons=payload["only_muons"])
-            if rec is None:
-                continue
             n_particles += 1
-            if rec.pid in MUON_IDS_B:
-                n_muons += 1
-            if payload["discard_upgoing"] and rec.pz > 0.0:
-                continue
-            angles = theta_phi_from_momentum(rec.px, rec.py, rec.pz)
-            if angles is None:
-                continue
-            theta, phi_abs = angles
-            phi_rel = (phi_abs - grid.phi0) % 360.0
-            if payload["wrap180"] and phi_rel > 180.0:
-                phi_rel -= 360.0
-
-            i = int(np.searchsorted(grid.theta_edges, theta, side="right") - 1)
-            if i < 0 or i >= len(grid.theta):
-                continue
-            j = int(np.searchsorted(grid.phi_edges, phi_rel, side="right") - 1)
-            if j < 0 or j >= len(grid.phi):
-                continue
-            if not grid.filled[i, j]:
-                continue
-
-            n_in_grid_total += 1
-            if payload["source_mode"] == "inside" and not grid.inside_mask[i, j]:
-                n_skipped_source_outside_geometry += 1
-                continue
-
-            n_in_grid += 1
-            H_in[i, j] += 1
-
-            E_total = rec.e_total_GeV
-            T = E_total - MUON_MASS_GEV
-            if T <= 0.0 or not math.isfinite(T):
-                H_out[i, j] += 1
-                n_identity += 1
-                n_energy_nonpositive += 1
-                continue
-
-            if grid.L_grid[i, j] <= 0.0:
-                H_out[i, j] += 1
-                n_identity += 1
-                continue
-
-            k2d = cache.get(i, j, T)
-            if k2d.used_nearest_fallback:
-                n_nearest += 1
-            if k2d.outside_domain:
-                n_outside += 1
-            if not k2d.valid:
-                n_no_support += 1
-
-            if k2d.flat_indices.size == 1:
-                H_out.ravel()[k2d.flat_indices[0]] += 1
-                n_identity += 1
-                continue
-
-            u = rng.random()
-            k = int(np.searchsorted(k2d.cdf, u, side="right"))
-            if k >= len(k2d.flat_indices):
-                k = len(k2d.flat_indices) - 1
-            H_out.ravel()[k2d.flat_indices[k]] += 1
-            n_smeared += 1
-
+            n_muons += 1
+            handle_event(float(theta), float(phi_rel), float(T))
+            pbar.update(1)
             if payload["head"] and n_in_grid >= int(payload["head"]):
                 break
+        pbar.close()
+    else:
+        if shw_path is None or not shw_path.exists():
+            raise FileNotFoundError(shw_path)
+        total_bytes = stream_size_hint(shw_path)
+        pbar = tqdm(total=total_bytes, unit="B", unit_scale=True, desc=f"event-MC {point}", disable=bool(payload["no_progress"]))
 
-    pbar.close()
+        with open_shw_bytes(shw_path, member_name=payload.get("shw_member")) as f:
+            for raw in f:
+                n_lines += 1
+                pbar.update(len(raw))
+                s = raw.strip()
+                if not s or s.startswith(b"#"):
+                    continue
+                parts = s.split()
+                rec = parse_muon_parts(parts, shw_format=payload["shw_format"], only_muons=payload["only_muons"])
+                if rec is None:
+                    continue
+                n_particles += 1
+                if rec.pid in MUON_IDS_B:
+                    n_muons += 1
+                if payload["discard_upgoing"] and rec.pz > 0.0:
+                    continue
+                angles = theta_phi_from_momentum(rec.px, rec.py, rec.pz)
+                if angles is None:
+                    continue
+                theta, phi_abs = angles
+                phi_rel = (phi_abs - grid.phi0) % 360.0
+                if payload["wrap180"] and phi_rel > 180.0:
+                    phi_rel -= 360.0
+                T = rec.e_total_GeV - MUON_MASS_GEV
+                handle_event(theta, phi_rel, T)
+
+                if payload["head"] and n_in_grid >= int(payload["head"]):
+                    break
+
+        pbar.close()
 
     point_dir = outdir / point
     point_dir.mkdir(parents=True, exist_ok=True)
 
-    save_tables_and_plots(point, grid, H_in, H_out, point_dir, payload)
+    output_paths = save_tables_and_plots(point, grid, H_in, H_out, point_dir, payload)
 
     total_in = int(H_in.sum())
     total_out = int(H_out.sum())
@@ -650,7 +670,8 @@ def process_point(payload: dict) -> ProcessResult:
 
     summary = {
         "point": point,
-        "shw_path": str(shw_path),
+        "shw_path": str(shw_path) if shw_path is not None else "",
+        "event_cache_path": str(event_cache_path) if event_cache_path is not None else "",
         "ecrit_csv": str(ecrit_csv),
         "kernel_library": str(payload["kernel_library"]),
         "interp_method": payload["interp_method"],
@@ -690,6 +711,7 @@ def process_point(payload: dict) -> ProcessResult:
         "comparison_png": str(point_dir / f"{prefix}_smearing_comparison_{point}.png"),
         "inside_comparison_png": str(point_dir / f"{prefix}_retained_inside_comparison_{point}.png"),
     }
+    summary.update(output_paths)
     pd.DataFrame([summary]).to_csv(point_dir / f"event_mc_summary_{point}.csv", index=False)
     return ProcessResult(point=point, summary=summary)
 
@@ -717,6 +739,74 @@ def output_table(grid: GridInfo, H_in: np.ndarray, H_out: np.ndarray, inside_onl
         "delta_smeared_minus_input": delta.ravel(),
         "relative_delta": rel.ravel(),
     })
+
+
+def step_tag(step: float) -> str:
+    return f"bin{step:.2f}deg".replace(".", "p").replace("-", "m")
+
+
+def edges_for_step(start: float, stop: float, step: float) -> np.ndarray:
+    if step <= 0.0 or not np.isfinite(step):
+        raise ValueError("--display-step must be positive")
+    n = max(1, int(math.ceil((stop - start) / step)))
+    edges = start + np.arange(n + 1, dtype=float) * step
+    edges[-1] = stop
+    return edges
+
+
+def rebin_to_step(grid: GridInfo, H_in: np.ndarray, H_out: np.ndarray, step: float) -> tuple[GridInfo, np.ndarray, np.ndarray]:
+    """Aggregate native MC cells to a coarser angular bin."""
+    theta_edges = edges_for_step(float(grid.theta_edges[0]), float(grid.theta_edges[-1]), step)
+    phi_edges = edges_for_step(float(grid.phi_edges[0]), float(grid.phi_edges[-1]), step)
+    theta = 0.5 * (theta_edges[:-1] + theta_edges[1:])
+    phi = 0.5 * (phi_edges[:-1] + phi_edges[1:])
+
+    ti = np.searchsorted(theta_edges, grid.theta, side="right") - 1
+    pj = np.searchsorted(phi_edges, grid.phi, side="right") - 1
+    valid_t = (ti >= 0) & (ti < len(theta))
+    valid_p = (pj >= 0) & (pj < len(phi))
+
+    out_shape = (len(theta), len(phi))
+    rebinned_in = np.zeros(out_shape, dtype=float)
+    rebinned_out = np.zeros(out_shape, dtype=float)
+    L_sum = np.zeros(out_shape, dtype=float)
+    L_count = np.zeros(out_shape, dtype=float)
+    inside_count = np.zeros(out_shape, dtype=np.int64)
+    filled_count = np.zeros(out_shape, dtype=np.int64)
+
+    for i_old, i_new in enumerate(ti):
+        if not valid_t[i_old]:
+            continue
+        for j_old, j_new in enumerate(pj):
+            if not valid_p[j_old]:
+                continue
+            rebinned_in[i_new, j_new] += float(H_in[i_old, j_old])
+            rebinned_out[i_new, j_new] += float(H_out[i_old, j_old])
+            if grid.filled[i_old, j_old]:
+                filled_count[i_new, j_new] += 1
+                L = float(grid.L_grid[i_old, j_old])
+                if np.isfinite(L):
+                    L_sum[i_new, j_new] += L
+                    L_count[i_new, j_new] += 1.0
+            if grid.inside_mask[i_old, j_old]:
+                inside_count[i_new, j_new] += 1
+
+    L_grid = np.divide(L_sum, L_count, out=np.zeros_like(L_sum), where=L_count > 0)
+    coarse_grid = GridInfo(
+        point=grid.point,
+        theta=theta,
+        phi=phi,
+        theta_edges=theta_edges,
+        phi_edges=phi_edges,
+        L_grid=L_grid,
+        inside_mask=inside_count > 0,
+        filled=filled_count > 0,
+        phi0=grid.phi0,
+        theta_col=grid.theta_col,
+        phi_col=grid.phi_col,
+        L_col=grid.L_col,
+    )
+    return coarse_grid, rebinned_in, rebinned_out
 
 
 def prepare_plot(Z: np.ndarray, blank_zeros: bool = True) -> np.ndarray:
@@ -780,7 +870,7 @@ def plot_comparison(grid: GridInfo, H_in: np.ndarray, H_out: np.ndarray, out_png
 
 
 def save_tables_and_plots(point: str, grid: GridInfo, H_in: np.ndarray, H_out: np.ndarray,
-                          point_dir: Path, payload: dict) -> None:
+                          point_dir: Path, payload: dict) -> dict[str, str]:
     prefix = output_prefix_for_source_mode(payload["source_mode"])
     if payload["source_mode"] == "inside":
         title_full = f"Event-by-event empirical MC from inside-volcano sources — {point}"
@@ -789,15 +879,17 @@ def save_tables_and_plots(point: str, grid: GridInfo, H_in: np.ndarray, H_out: n
         title_full = f"Event-by-event empirical MC smearing — {point}"
         title_retained = f"Inside-volcano counts after event-by-event empirical MC — {point}"
 
-    output_table(grid, H_in, H_out, inside_only=False).to_csv(
-        point_dir / f"{prefix}_smearing_table_{point}.csv", index=False
-    )
-    output_table(grid, H_in, H_out, inside_only=True).to_csv(
-        point_dir / f"{prefix}_retained_inside_table_{point}.csv", index=False
-    )
+    outputs: dict[str, str] = {}
+    table_path = point_dir / f"{prefix}_smearing_table_{point}.csv"
+    retained_table_path = point_dir / f"{prefix}_retained_inside_table_{point}.csv"
+    comparison_path = point_dir / f"{prefix}_smearing_comparison_{point}.png"
+    retained_comparison_path = point_dir / f"{prefix}_retained_inside_comparison_{point}.png"
+
+    output_table(grid, H_in, H_out, inside_only=False).to_csv(table_path, index=False)
+    output_table(grid, H_in, H_out, inside_only=True).to_csv(retained_table_path, index=False)
     plot_comparison(
         grid, H_in, H_out,
-        point_dir / f"{prefix}_smearing_comparison_{point}.png",
+        comparison_path,
         title=title_full,
         inside_only=False,
         blank_zeros=bool(payload["blank_zeros"]),
@@ -806,13 +898,66 @@ def save_tables_and_plots(point: str, grid: GridInfo, H_in: np.ndarray, H_out: n
     )
     plot_comparison(
         grid, H_in, H_out,
-        point_dir / f"{prefix}_retained_inside_comparison_{point}.png",
+        retained_comparison_path,
         title=title_retained,
         inside_only=True,
         blank_zeros=bool(payload["blank_zeros"]),
         vmax_percentile=float(payload["vmax_percentile"]),
         rel_vmax_percentile=float(payload["relative_vmax_percentile"]),
     )
+    outputs.update({
+        "output_table": str(table_path),
+        "inside_output_table": str(retained_table_path),
+        "comparison_png": str(comparison_path),
+        "inside_comparison_png": str(retained_comparison_path),
+    })
+
+    display_step = payload.get("display_step")
+    if display_step is not None:
+        display_step = float(display_step)
+        native_step = max(bin_width(grid.theta), bin_width(grid.phi))
+        if display_step > native_step + 1e-9:
+            tag = step_tag(display_step)
+            bgrid, bH_in, bH_out = rebin_to_step(grid, H_in, H_out, display_step)
+            inside_in = np.where(grid.inside_mask, H_in, 0.0)
+            inside_out = np.where(grid.inside_mask, H_out, 0.0)
+            inside_grid, bH_in_inside, bH_out_inside = rebin_to_step(grid, inside_in, inside_out, display_step)
+
+            binned_table = point_dir / f"{prefix}_smearing_binned_{tag}_table_{point}.csv"
+            binned_png = point_dir / f"{prefix}_smearing_binned_{tag}_comparison_{point}.png"
+            binned_inside_table = point_dir / f"{prefix}_retained_inside_binned_{tag}_table_{point}.csv"
+            binned_inside_png = point_dir / f"{prefix}_retained_inside_binned_{tag}_comparison_{point}.png"
+
+            output_table(bgrid, bH_in, bH_out, inside_only=False).to_csv(binned_table, index=False)
+            output_table(inside_grid, bH_in_inside, bH_out_inside, inside_only=False).to_csv(
+                binned_inside_table, index=False
+            )
+            plot_comparison(
+                bgrid, bH_in, bH_out,
+                binned_png,
+                title=f"{title_full} ({display_step:g} deg bins)",
+                inside_only=False,
+                blank_zeros=bool(payload["blank_zeros"]),
+                vmax_percentile=float(payload["vmax_percentile"]),
+                rel_vmax_percentile=float(payload["relative_vmax_percentile"]),
+            )
+            plot_comparison(
+                inside_grid, bH_in_inside, bH_out_inside,
+                binned_inside_png,
+                title=f"{title_retained} ({display_step:g} deg bins)",
+                inside_only=False,
+                blank_zeros=bool(payload["blank_zeros"]),
+                vmax_percentile=float(payload["vmax_percentile"]),
+                rel_vmax_percentile=float(payload["relative_vmax_percentile"]),
+            )
+            outputs.update({
+                "binned_display_step_deg": f"{display_step:g}",
+                "binned_output_table": str(binned_table),
+                "binned_inside_output_table": str(binned_inside_table),
+                "binned_comparison_png": str(binned_png),
+                "binned_inside_comparison_png": str(binned_inside_png),
+            })
+    return outputs
 
 
 # -----------------------------------------------------------------------------
@@ -824,6 +969,8 @@ def parser() -> argparse.ArgumentParser:
     src = ap.add_mutually_exclusive_group(required=True)
     src.add_argument("--shw", type=Path, default=None, help="One SHW file reused for all points, usually raw.")
     src.add_argument("--shw-template", default=None, help="Template per point, e.g. run/04_filtered/stem_filtered_{point}.shw")
+    src.add_argument("--event-cache", type=Path, default=None, help="One cached events_*.npz file for a single-point run.")
+    src.add_argument("--event-cache-template", default=None, help="Template per point, e.g. run/04_event_cache/events_{point}.npz")
     ap.add_argument("--shw-format", choices=["auto", "arti12", "cnf9"], default="auto",
                     help="Input layout. auto detects ARTI-style 12-col or CNF 9-col SHW lines.")
     ap.add_argument("--shw-member", default=None,
@@ -846,6 +993,8 @@ def parser() -> argparse.ArgumentParser:
     ap.add_argument("--theta-max", type=float, default=90.0)
     ap.add_argument("--phi-min", type=float, default=-60.0)
     ap.add_argument("--phi-max", type=float, default=60.0)
+    ap.add_argument("--display-step", type=float, default=None,
+                    help="Optional coarser angular bin in degrees for detector-resolution muograms.")
     ap.add_argument("--wrap180", dest="wrap180", action="store_true", default=True)
     ap.add_argument("--no-wrap180", dest="wrap180", action="store_false")
     ap.add_argument("--source-mode", choices=["all", "inside"], default="all",
@@ -875,14 +1024,23 @@ def main(argv=None) -> int:
 
     payloads = []
     for k, point in enumerate(args.points):
-        if args.shw_template:
+        if args.event_cache_template:
+            shw_path = None
+            event_cache_path = Path(args.event_cache_template.format(point=point))
+        elif args.event_cache:
+            shw_path = None
+            event_cache_path = args.event_cache
+        elif args.shw_template:
             shw_path = Path(args.shw_template.format(point=point))
+            event_cache_path = None
         else:
             shw_path = args.shw
+            event_cache_path = None
         ecrit_csv = Path(args.ecrit_template.format(point=point))
         payloads.append({
             "point": point,
-            "shw_path": str(shw_path),
+            "shw_path": str(shw_path) if shw_path is not None else "",
+            "event_cache_path": str(event_cache_path) if event_cache_path is not None else "",
             "shw_format": args.shw_format,
             "shw_member": args.shw_member,
             "ecrit_csv": str(ecrit_csv),
@@ -898,6 +1056,7 @@ def main(argv=None) -> int:
             "theta_max": args.theta_max,
             "phi_min": args.phi_min,
             "phi_max": args.phi_max,
+            "display_step": args.display_step,
             "wrap180": args.wrap180,
             "source_mode": args.source_mode,
             "discard_upgoing": args.discard_upgoing,

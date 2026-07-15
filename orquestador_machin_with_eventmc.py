@@ -67,6 +67,8 @@ DEFAULT_POINTS = ("P1", "P2", "P4", "P5")
 SCRIPT_01 = "01_puntos.py"
 SCRIPT_02 = "02_longitud.py"
 SCRIPT_03 = "03_ecrit_heatmaps.py"
+SCRIPT_04_KINEMATIC_CACHE = "04_build_kinematic_cache.py"
+SCRIPT_04_EVENT_CACHE = "04_build_event_cache.py"
 SCRIPT_05 = "05_plot_theta_phi.py"
 SCRIPT_06 = "06_filter_muons_by_ecrit.py"  # versión rápida multi-punto en esta rama
 SCRIPT_07_MERGED = "07_inside_volcano_maps_merged.py"
@@ -77,6 +79,8 @@ SCRIPT_09 = "09_apply_angular_smearing_pretty_MC.py"
 SCRIPT_08_EMPIRICAL = "08_scattering_empirical_kernel.py"
 SCRIPT_09_EMPIRICAL = "09_apply_angular_smearing_empirical_kernel.py"
 SCRIPT_10_EVENT_MC = "10_apply_event_by_event_empirical_mc_v2.py"
+SCRIPT_12_IN_SCATTERING = "12_apply_in_scattering_background.py"
+SCRIPT_13_SPATIAL_IN_SCATTERING = "13_apply_spatial_in_scattering_dem.py"
 SCRIPT_4PANEL = "plot_4panel_muon_maps.py"
 
 
@@ -411,6 +415,26 @@ def write_outputs_index(outdir: Path, rows: list[dict[str, str]]) -> None:
         writer.writerows(rows)
 
 
+def cleanup_empty_run_dirs(outdir: Path) -> list[Path]:
+    """Remove empty run directories while preserving Highland placeholders."""
+    keep_names = {"07_scattering", "08_smearing"}
+    removed: list[Path] = []
+    if not outdir.exists():
+        return removed
+
+    directories = [p for p in outdir.rglob("*") if p.is_dir()]
+    directories.sort(key=lambda p: len(p.parts), reverse=True)
+    for directory in directories:
+        if directory.name in keep_names:
+            continue
+        try:
+            directory.rmdir()
+        except OSError:
+            continue
+        removed.append(directory)
+    return removed
+
+
 def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(
         description="Orquestador completo: FOV -> longitud -> Ecrit -> filtro -> mapas -> inside -> scattering -> smearing."
@@ -429,6 +453,14 @@ def build_parser() -> argparse.ArgumentParser:
                     help="normal conserva salidas históricas; compact comprime los .shw filtrados si no se indicó otra compresión.")
     ap.add_argument("--filtered-compression", choices=["none", "gz", "xz", "bz2"], default="none",
                     help="Compresión de 04_filtered/*.shw. gz suele ser el mejor equilibrio entre espacio y velocidad.")
+    ap.add_argument("--fast-cache", action="store_true",
+                    help="Ruta rápida filtered-only: lee el SHW una vez, evita escribir .shw filtrados y genera cache/mapas/inside.")
+    ap.add_argument("--kinematic-cache", default=None,
+                    help="Directorio de cache cinemático global. Si no existe y hay --shw, se construye antes de --fast-cache.")
+    ap.add_argument("--rebuild-kinematic-cache", action="store_true",
+                    help="Regenera --kinematic-cache aunque ya exista.")
+    ap.add_argument("--kinematic-cache-chunk-events", type=int, default=1_000_000,
+                    help="Eventos por chunk al construir el cache cinemático.")
     ap.add_argument("--outdir", default="run_machin", help="Carpeta raíz de salida")
     ap.add_argument("--points", nargs="+", default=list(DEFAULT_POINTS), choices=list(DEFAULT_POINTS), help="Puntos a procesar")
     ap.add_argument("--rho", type=float, default=2.65, help="Densidad efectiva de roca en g/cm^3")
@@ -493,7 +525,7 @@ def build_parser() -> argparse.ArgumentParser:
                     help="Modelo de dispersión angular a ejecutar. Default: highland para conservar compatibilidad.")
     ap.add_argument("--empirical-kernel-library", default=None,
                     help="Ruta a empirical_kernel_library.npz. Default: autodetecta en modulos/ o data/.")
-    ap.add_argument("--empirical-interp-method", choices=["rbf_linear", "linear", "nearest"], default="rbf_linear",
+    ap.add_argument("--empirical-interp-method", choices=["rbf_linear", "linear", "nearest"], default="linear",
                     help="Interpolación interna del kernel empírico en log(L), log(E/L).")
     ap.add_argument("--empirical-energy-factors", nargs="+", type=float, default=None,
                     help="Factores Tref = factor*Tcrit para la rama empírica. Default: usa --scattering-energy-factors.")
@@ -511,12 +543,12 @@ def build_parser() -> argparse.ArgumentParser:
                     help="Phi mínimo para la rama empírica. Default: usa --smearing-phi-min.")
     ap.add_argument("--empirical-phi-max", type=float, default=None,
                     help="Phi máximo para la rama empírica. Default: usa --smearing-phi-max.")
-    ap.add_argument("--empirical-kernel-threshold", type=float, default=None,
+    ap.add_argument("--empirical-kernel-threshold", type=float, default=1e-3,
                     help="Opcional: descarta pesos K menores que este valor en el smearing empírico.")
     ap.add_argument("--empirical-max-kernel-radius-mrad", type=float, default=None,
                     help="Opcional: limita el radio angular evaluado del kernel empírico.")
 
-    # 10_apply_event_by_event_empirical_mc_v2.py
+    # modulos/10_apply_event_by_event_empirical_mc_v2.py
     ap.add_argument("--run-event-mc", action="store_true",
                     help="Ejecuta el MC empírico evento-por-evento usando energía real del .shw y L(theta,phi).")
     ap.add_argument("--skip-event-mc", action="store_true",
@@ -529,6 +561,10 @@ def build_parser() -> argparse.ArgumentParser:
                     help="Workers para el MC evento-por-evento. Default: usa --parallel-jobs.")
     ap.add_argument("--event-mc-energy-cache-dlog", type=float, default=0.05,
                     help="Cuantización logarítmica de energía para cachear kernels. 0 desactiva cache aproximada.")
+    ap.add_argument("--event-mc-kernel-threshold", type=float, default=None,
+                    help="Umbral de densidad para soporte local del MC evento-por-evento. Default: usa --empirical-kernel-threshold.")
+    ap.add_argument("--event-mc-max-kernel-radius-mrad", type=float, default=None,
+                    help="Radio máximo opcional del kernel en el MC evento-por-evento.")
     ap.add_argument("--event-mc-random-seed", type=int, default=12345,
                     help="Semilla RNG para el MC evento-por-evento.")
     ap.add_argument("--event-mc-theta-min", type=float, default=None,
@@ -539,8 +575,92 @@ def build_parser() -> argparse.ArgumentParser:
                     help="Phi mínimo para el canvas del MC evento-por-evento. Default: usa --plot-phi-min.")
     ap.add_argument("--event-mc-phi-max", type=float, default=None,
                     help="Phi máximo para el canvas del MC evento-por-evento. Default: usa --plot-phi-max.")
-    ap.add_argument("--event-mc-display-step", type=float, default=None,
-                    help="Paso visual del MC evento-por-evento. Default: usa --inside-display-step.")
+    ap.add_argument("--event-mc-display-step", type=float, default=2.5,
+                    help="Paso angular extra para muogramas rebineados del MC evento-por-evento. Default: 2.5 grados.")
+
+    # modulos/12_apply_in_scattering_background.py
+    ap.add_argument("--run-in-scattering", action="store_true",
+                    help="Ejecuta estimación angular-only de contaminación externa -> acceptance por MCS.")
+    ap.add_argument("--skip-in-scattering", action="store_true",
+                    help="No ejecuta in-scattering aunque --run-in-scattering esté activo.")
+    ap.add_argument("--in-scattering-step-m", type=float, default=100.0,
+                    help="Paso de propagación en roca para in-scattering.")
+    ap.add_argument("--in-scattering-samples-per-muon", type=int, default=1,
+                    help="Muestras MC por muón externo seleccionado.")
+    ap.add_argument("--in-scattering-max-angular-margin-deg", type=float, default=None,
+                    help="Margen angular externo opcional. Si se omite, usa todo el complemento F\\A.")
+    ap.add_argument("--in-scattering-seed", type=int, default=12345,
+                    help="Semilla RNG para in-scattering.")
+    ap.add_argument("--in-scattering-workers", type=int, default=1,
+                    help="Reservado para el módulo 12. Usa --parallel-jobs para correr varios puntos en paralelo; kinematic-cache usa cribado vectorizado por punto.")
+    ap.add_argument("--in-scattering-theta-min-deg", type=float, default=None,
+                    help="Theta mínimo del dominio físico F. Default: módulo 12 usa 0.")
+    ap.add_argument("--in-scattering-theta-max-deg", type=float, default=None,
+                    help="Theta máximo del dominio físico F. Default: módulo 12 usa 180.")
+    ap.add_argument("--in-scattering-phi-min-deg", type=float, default=None,
+                    help="Phi relativo mínimo del dominio físico F. Default: módulo 12 usa -180.")
+    ap.add_argument("--in-scattering-phi-max-deg", type=float, default=None,
+                    help="Phi relativo máximo del dominio físico F. Default: módulo 12 usa 180.")
+    ap.add_argument("--in-scattering-external-length-mode", choices=["hybrid", "dem", "length-map"], default="hybrid",
+                    help="Fuente de longitud externa: length-map, DEM o híbrida.")
+    ap.add_argument("--in-scattering-external-s-max-m", type=float, default=5000.0,
+                    help="Longitud máxima del rayo DEM externo.")
+    ap.add_argument("--in-scattering-external-ray-step-m", type=float, default=5.0,
+                    help="Paso del trazador DEM externo.")
+    ap.add_argument("--in-scattering-length-cache-step-deg", type=float, default=0.5,
+                    help="Cuantización angular para cachear longitudes externas por DEM.")
+    ap.add_argument("--in-scattering-kernel-threshold", type=float, default=None,
+                    help="Umbral de densidad del kernel para muestrear deflexiones. Default: usa --empirical-kernel-threshold.")
+    ap.add_argument("--in-scattering-kernel-scale", type=float, default=1.0,
+                    help="Escala artificial de deflexión para validaciones.")
+    ap.add_argument("--in-scattering-disable-scattering", action="store_true",
+                    help="Propaga energía sin deflexión angular; útil para validar aceptación externa ~0.")
+    ap.add_argument("--in-scattering-debug-trajectories", action="store_true",
+                    help="Guarda CSV de trayectorias aceptadas.")
+    ap.add_argument("--in-scattering-no-figures", action="store_true",
+                    help="No genera figuras opcionales de in-scattering.")
+    ap.add_argument("--in-scattering-head", type=int, default=0,
+                    help="Debug: detiene cada punto tras N muones externos seleccionados.")
+
+    # modulos/13_apply_spatial_in_scattering_dem.py
+    ap.add_argument("--run-spatial-in-scattering", action="store_true",
+                    help="Ejecuta diagnóstico espacial DEM de in-scattering externo -> máscara angular.")
+    ap.add_argument("--skip-spatial-in-scattering", action="store_true",
+                    help="No ejecuta in-scattering espacial aunque --run-spatial-in-scattering esté activo.")
+    ap.add_argument("--spatial-in-scattering-ray-step-m", type=float, default=100.0,
+                    help="Paso de transporte DEM para in-scattering espacial.")
+    ap.add_argument("--spatial-in-scattering-sample-probability", type=float, default=0.01,
+                    help="Probabilidad de muestrear cada evento del cache; eventos retenidos pesan 1/p.")
+    ap.add_argument("--spatial-in-scattering-samples-per-muon", type=int, default=1,
+                    help="Muestras de posición por muón muestreado.")
+    ap.add_argument("--spatial-in-scattering-source-surface", choices=["entry-box", "top-plane", "volcano-surface"], default="entry-box",
+                    help="Superficie espacial de entrada: caja DEM, plano superior legacy o superficie DEM del volcan.")
+    ap.add_argument("--spatial-in-scattering-volcano-surface-grid-step-m", type=float, default=50.0,
+                    help="Paso de grilla para construir la superficie volcanica del modulo 13.")
+    ap.add_argument("--spatial-in-scattering-volcano-surface-edge-guard-m", type=float, default=500.0,
+                    help="Margen contra el borde DEM para superficie volcanica del modulo 13.")
+    ap.add_argument("--spatial-in-scattering-volcano-surface-min-height-frac", type=float, default=0.0,
+                    help="Altura relativa minima [0,1] de la superficie volcanica objetivo.")
+    ap.add_argument("--spatial-in-scattering-volcano-surface-entry-check-m", type=float, default=10.0,
+                    help="Distancia de prueba para exigir entrada inmediata en roca desde superficie volcanica.")
+    ap.add_argument("--spatial-in-scattering-max-angular-margin-deg", type=float, default=None,
+                    help="Solo propaga direcciones externas a esta distancia angular de la mascara aceptada.")
+    ap.add_argument("--spatial-in-scattering-entry-face-importance", default="",
+                    help="Importance sampling por cara para módulo 13, e.g. south:4,west:4,top:1,east:0.5,north:0.5.")
+    ap.add_argument("--spatial-in-scattering-min-survival-rock-m", type=float, default=None,
+                    help="Corte temprano por rango CSDA; default del módulo: ray-step-m.")
+    ap.add_argument("--spatial-in-scattering-seed", type=int, default=12345,
+                    help="Semilla RNG para in-scattering espacial.")
+    ap.add_argument("--spatial-in-scattering-head", type=int, default=0,
+                    help="Debug: detiene cada punto tras N eventos de flujo leídos; 0 usa todo el cache.")
+    ap.add_argument("--spatial-in-scattering-observer-radius-m", type=float, default=0.0,
+                    help="Si >0 exige paso cerca de P1; 0 mantiene diagnóstico angular DEM sin detector físico.")
+    ap.add_argument("--spatial-in-scattering-kernel-scale", type=float, default=1.0,
+                    help="Escala artificial de deflexión para validaciones.")
+    ap.add_argument("--spatial-in-scattering-disable-scattering", action="store_true",
+                    help="Control: transporte sin deflexión angular.")
+    ap.add_argument("--spatial-in-scattering-no-figures", action="store_true",
+                    help="No genera figuras opcionales del diagnóstico espacial.")
     ap.add_argument("--plot-theta-min", type=float, default=60.0)
     ap.add_argument("--plot-theta-max", type=float, default=90.0)
     ap.add_argument("--plot-phi-min", type=float, default=-50.0)
@@ -564,12 +684,30 @@ def main() -> int:
     apply_profile(args)
     if args.storage_profile == "compact" and args.filtered_compression == "none":
         args.filtered_compression = "gz"
+    if args.fast_cache:
+        if args.plot_source == "both":
+            args.plot_source = "filtered"
+        if args.inside_volcano_source == "both":
+            args.inside_volcano_source = "filtered"
+        if args.smearing_source == "both":
+            args.smearing_source = "filtered"
+        if args.event_mc_source == "both":
+            args.event_mc_source = "filtered"
+        if args.plot_source == "raw":
+            raise ValueError("--fast-cache es filtered-only; usa --plot-source filtered/none.")
+        if args.inside_volcano_source == "raw":
+            raise ValueError("--fast-cache es filtered-only; usa --inside-volcano-source filtered/none.")
+        if args.smearing_source == "raw":
+            raise ValueError("--fast-cache es filtered-only; usa --smearing-source filtered.")
+        if args.event_mc_source == "raw":
+            raise ValueError("--fast-cache es filtered-only; usa --event-mc-source filtered.")
 
     scripts_dir = resolve_scripts_dir(resolve_path(args.scripts_dir))
     hgt_dir = resolve_hgt_dir(resolve_path(args.hgt_dir))
     outdir = resolve_path(args.outdir)
     range_file_arg = resolve_path(args.range_file)
     shw = resolve_path(args.shw)
+    kinematic_cache = resolve_path(args.kinematic_cache)
     empirical_kernel_library_arg = resolve_path(args.empirical_kernel_library)
 
     assert outdir is not None
@@ -581,6 +719,10 @@ def main() -> int:
 
     scripts = check_scripts(scripts_dir)
     empirical_kernel_library = find_empirical_kernel(empirical_kernel_library_arg, scripts_dir, hgt_dir)
+    if args.fast_cache:
+        scripts["event_cache"] = find_script(SCRIPT_04_EVENT_CACHE, scripts_dir, "event_cache")
+        if kinematic_cache is not None:
+            scripts["kinematic_cache"] = find_script(SCRIPT_04_KINEMATIC_CACHE, scripts_dir, "kinematic_cache")
 
     if args.scattering_model in ("empirical", "both"):
         scripts["scattering_empirical"] = find_script(SCRIPT_08_EMPIRICAL, scripts_dir, "scattering_empirical")
@@ -603,6 +745,38 @@ def main() -> int:
                 "No encontré empirical_kernel_library.npz. Usa --empirical-kernel-library ruta/al/kernel.npz"
             )
         require_file(empirical_kernel_library, "empirical_kernel_library.npz")
+
+    if args.run_in_scattering and (not args.skip_in_scattering):
+        scripts["in_scattering"] = find_script(
+            SCRIPT_12_IN_SCATTERING,
+            scripts_dir,
+            "in_scattering",
+        )
+        if empirical_kernel_library is None:
+            raise FileNotFoundError(
+                "No encontré empirical_kernel_library.npz. Usa --empirical-kernel-library ruta/al/kernel.npz"
+            )
+        require_file(empirical_kernel_library, "empirical_kernel_library.npz")
+        if shw is None and kinematic_cache is None:
+            raise FileNotFoundError(
+                "--run-in-scattering requiere --shw o --kinematic-cache para leer flujo abierto."
+            )
+
+    if args.run_spatial_in_scattering and (not args.skip_spatial_in_scattering):
+        scripts["spatial_in_scattering"] = find_script(
+            SCRIPT_13_SPATIAL_IN_SCATTERING,
+            scripts_dir,
+            "spatial_in_scattering",
+        )
+        if empirical_kernel_library is None:
+            raise FileNotFoundError(
+                "No encontré empirical_kernel_library.npz. Usa --empirical-kernel-library ruta/al/kernel.npz"
+            )
+        require_file(empirical_kernel_library, "empirical_kernel_library.npz")
+        if kinematic_cache is None:
+            raise FileNotFoundError(
+                "--run-spatial-in-scattering requiere --kinematic-cache o una corrida que construya cache cinemático."
+            )
 
     if args.inside_volcano_source != "none":
         merged_07 = scripts_dir / SCRIPT_07_MERGED
@@ -632,9 +806,11 @@ def main() -> int:
 
     dirs = {
         "inputs": outdir / "00_inputs",
+        "kinematic_cache_stage": outdir / "00_kinematic_cache",
         "geometry": outdir / "01_geometry",
         "lengths": outdir / "02_lengths",
         "ecrit": outdir / "03_ecrit",
+        "event_cache": outdir / "04_event_cache",
         "filtered": outdir / "04_filtered",
         "plots": outdir / "05_plots",
         "inside_volcano": outdir / "06_inside_volcano",
@@ -643,6 +819,7 @@ def main() -> int:
         "scattering_empirical": outdir / "07_scattering_empirical",
         "smearing_empirical": outdir / "08_smearing_empirical",
         "event_mc_empirical": outdir / "09_event_mc_empirical",
+        "in_scattering": outdir / "10_in_scattering_background",
         "logs": outdir / "logs",
         "work_geometry": outdir / "_work_geometry",
     }
@@ -674,6 +851,40 @@ def main() -> int:
     output_rows: list[dict[str, str]] = []
 
     # ------------------------------------------------------------------
+    # 00. Cache cinemático global opcional
+    # ------------------------------------------------------------------
+    if args.fast_cache and kinematic_cache is not None:
+        build_kinematic = args.rebuild_kinematic_cache or not (kinematic_cache / "manifest.json").exists()
+        if build_kinematic:
+            if shw is None:
+                raise FileNotFoundError("--kinematic-cache no existe y no se puede construir sin --shw")
+            print(f"[0/5] Cache cinemático compacto -> {kinematic_cache}")
+            cmd = [
+                sys.executable,
+                scripts["kinematic_cache"],
+                "--shw", shw,
+                "--shw-format", args.shw_format,
+                "--out", kinematic_cache,
+                "--chunk-events", str(args.kinematic_cache_chunk_events),
+                "--force",
+            ]
+            if args.shw_member:
+                cmd.extend(["--shw-member", args.shw_member])
+            result = run_command("00_kinematic_cache", cmd, cwd=outdir, log_dir=dirs["logs"], dry_run=args.dry_run)
+            stage_results.append(result)
+        else:
+            print(f"[0/5] Reuso cache cinemático -> {kinematic_cache}")
+
+        output_rows.append({
+            "stage": "00_kinematic_cache",
+            "point": "ALL",
+            "kind": "manifest",
+            "path": str(kinematic_cache / "manifest.json"),
+        })
+        if not args.dry_run:
+            require_file(kinematic_cache / "manifest.json", "manifest cache cinemático")
+
+    # ------------------------------------------------------------------
     # 01. Geometría / FOV
     # ------------------------------------------------------------------
     if not args.skip_geometry:
@@ -694,6 +905,7 @@ def main() -> int:
             required = [dirs["geometry"] / f"blocked_angles_{p}.csv" for p in args.points]
             required.append(dirs["geometry"] / "dem_fans.png")
             require_files(required, "01_geometry")
+            shutil.rmtree(dirs["work_geometry"], ignore_errors=True)
 
         output_rows.append({"stage": "01_geometry", "point": "ALL", "kind": "dem", "path": str(dirs["geometry"] / "dem_fans.png")})
         for p in args.points:
@@ -762,10 +974,117 @@ def main() -> int:
             ])
 
     # ------------------------------------------------------------------
+    # 04-fast. Cache compacto + mapas filtered en una sola lectura del SHW
+    # ------------------------------------------------------------------
+    do_fast_cache = args.fast_cache and ((shw is not None) or (kinematic_cache is not None)) and (not args.skip_filter)
+    reuse_fast_cache = args.fast_cache and args.skip_filter
+    fast_cache_products_available = do_fast_cache or reuse_fast_cache
+    event_cache_by_point: dict[str, Path] = {}
+    if do_fast_cache:
+        print(f"[4/5] Cache rápido de eventos + mapas filtered -> {dirs['event_cache']}")
+        cmd = [
+            sys.executable,
+            scripts["event_cache"],
+            "--points", *args.points,
+            "--ecrit-dir", dirs["ecrit"],
+            "--cache-outdir", dirs["event_cache"],
+            "--plot-outdir", dirs["plots"],
+            "--inside-outdir", dirs["inside_volcano"],
+            "--bins-theta", str(args.bins_theta),
+            "--bins-phi", str(args.bins_phi),
+            "--plot-theta-min", str(args.plot_theta_min),
+            "--plot-theta-max", str(args.plot_theta_max),
+            "--plot-phi-min", str(args.plot_phi_min),
+            "--plot-phi-max", str(args.plot_phi_max),
+            "--tol-phi", str(args.tol_phi),
+            "--tol-theta", str(args.tol_theta),
+            "--treat-out-of-grid-as-clear", str(args.treat_out_of_grid_as_clear),
+            "--inside-display-theta-min", str(args.inside_display_theta_min),
+            "--inside-display-theta-max", str(args.inside_display_theta_max),
+            "--inside-display-phi-min", str(args.inside_display_phi_min),
+            "--inside-display-phi-max", str(args.inside_display_phi_max),
+            "--inside-display-step", str(args.inside_display_step),
+            "--inside-vmax-percentile", str(args.inside_vmax_percentile),
+        ]
+        if kinematic_cache is not None:
+            cmd.extend(["--kinematic-cache", kinematic_cache])
+        else:
+            cmd.extend(["--shw", shw, "--shw-format", args.shw_format])
+        if args.shw_member and kinematic_cache is None:
+            cmd.extend(["--shw-member", args.shw_member])
+        if args.discard_upgoing:
+            cmd.append("--discard-upgoing")
+        if args.inside_show_zeros:
+            cmd.append("--inside-show-zeros")
+        if args.run_event_mc and (not args.skip_event_mc) and args.event_mc_source_mode == "inside":
+            cmd.extend(["--event-cache-source-mode", "inside"])
+
+        result = run_command("04_event_cache_fast", cmd, cwd=outdir, log_dir=dirs["logs"], dry_run=args.dry_run)
+        stage_results.append(result)
+
+        for p in args.points:
+            cache_path = dirs["event_cache"] / f"events_{p}.npz"
+            event_cache_by_point[p] = cache_path
+            output_rows.extend([
+                {"stage": "04_event_cache", "point": p, "kind": "event_cache_npz", "path": str(cache_path)},
+                {"stage": "05_plots_filtered", "point": p, "kind": "theta_phi_png", "path": str(dirs["plots"] / "filtered" / f"theta_phi_counts_{p}.png")},
+                {"stage": "05_plots_filtered", "point": p, "kind": "theta_phi_csv", "path": str(dirs["plots"] / "filtered" / f"theta_phi_counts_{p}.csv")},
+                {"stage": "05_plots_filtered", "point": p, "kind": "theta_phi_dNdOmega_png", "path": str(dirs["plots"] / "filtered" / f"theta_phi_dNdOmega_{p}.png")},
+                {"stage": "05_plots_filtered", "point": p, "kind": "theta_phi_dNdOmega_csv", "path": str(dirs["plots"] / "filtered" / f"theta_phi_dNdOmega_{p}.csv")},
+                {"stage": "06_inside_volcano_filtered", "point": p, "kind": "counts_inside_csv", "path": str(dirs["inside_volcano"] / "filtered" / p / f"counts_inside_volcano_{p}.csv")},
+                {"stage": "06_inside_volcano_filtered", "point": p, "kind": "dNdOmega_inside_csv", "path": str(dirs["inside_volcano"] / "filtered" / p / f"dNdOmega_inside_volcano_{p}.csv")},
+                {"stage": "06_inside_volcano_filtered", "point": p, "kind": "summary", "path": str(dirs["inside_volcano"] / "filtered" / p / f"inside_volcano_summary_{p}.csv")},
+                {"stage": "06_inside_volcano_filtered", "point": p, "kind": "individual_linear_png", "path": str(dirs["inside_volcano"] / "figures" / "filtered" / f"inside_volcano_filtered_{p}_linear.png")},
+                {"stage": "06_inside_volcano_filtered", "point": p, "kind": "individual_log_png", "path": str(dirs["inside_volcano"] / "figures" / "filtered" / f"inside_volcano_filtered_{p}_log.png")},
+            ])
+        output_rows.append({"stage": "04_event_cache", "point": "ALL", "kind": "summary", "path": str(dirs["event_cache"] / "event_cache_summary.csv")})
+        output_rows.append({"stage": "06_inside_volcano", "point": "ALL", "kind": "merged_manifest", "path": str(dirs["inside_volcano"] / "inside_volcano_merged_manifest.csv")})
+
+        if not args.dry_run:
+            required = []
+            for p in args.points:
+                required.extend([
+                    dirs["event_cache"] / f"events_{p}.npz",
+                    dirs["plots"] / "filtered" / f"theta_phi_counts_{p}.csv",
+                    dirs["inside_volcano"] / "filtered" / p / f"counts_inside_volcano_{p}.csv",
+                ])
+            require_files(required, "04_event_cache_fast")
+
+    if reuse_fast_cache:
+        print("[4/5] Reuso productos fast-cache existentes (--skip-filter).")
+        for p in args.points:
+            cache_path = dirs["event_cache"] / f"events_{p}.npz"
+            event_cache_by_point[p] = cache_path
+            output_rows.extend([
+                {"stage": "04_event_cache", "point": p, "kind": "event_cache_npz", "path": str(cache_path)},
+                {"stage": "05_plots_filtered", "point": p, "kind": "theta_phi_png", "path": str(dirs["plots"] / "filtered" / f"theta_phi_counts_{p}.png")},
+                {"stage": "05_plots_filtered", "point": p, "kind": "theta_phi_csv", "path": str(dirs["plots"] / "filtered" / f"theta_phi_counts_{p}.csv")},
+                {"stage": "05_plots_filtered", "point": p, "kind": "theta_phi_dNdOmega_png", "path": str(dirs["plots"] / "filtered" / f"theta_phi_dNdOmega_{p}.png")},
+                {"stage": "05_plots_filtered", "point": p, "kind": "theta_phi_dNdOmega_csv", "path": str(dirs["plots"] / "filtered" / f"theta_phi_dNdOmega_{p}.csv")},
+                {"stage": "06_inside_volcano_filtered", "point": p, "kind": "counts_inside_csv", "path": str(dirs["inside_volcano"] / "filtered" / p / f"counts_inside_volcano_{p}.csv")},
+                {"stage": "06_inside_volcano_filtered", "point": p, "kind": "dNdOmega_inside_csv", "path": str(dirs["inside_volcano"] / "filtered" / p / f"dNdOmega_inside_volcano_{p}.csv")},
+                {"stage": "06_inside_volcano_filtered", "point": p, "kind": "summary", "path": str(dirs["inside_volcano"] / "filtered" / p / f"inside_volcano_summary_{p}.csv")},
+                {"stage": "06_inside_volcano_filtered", "point": p, "kind": "individual_linear_png", "path": str(dirs["inside_volcano"] / "figures" / "filtered" / f"inside_volcano_filtered_{p}_linear.png")},
+                {"stage": "06_inside_volcano_filtered", "point": p, "kind": "individual_log_png", "path": str(dirs["inside_volcano"] / "figures" / "filtered" / f"inside_volcano_filtered_{p}_log.png")},
+            ])
+        output_rows.append({"stage": "04_event_cache", "point": "ALL", "kind": "summary", "path": str(dirs["event_cache"] / "event_cache_summary.csv")})
+        output_rows.append({"stage": "06_inside_volcano", "point": "ALL", "kind": "merged_manifest", "path": str(dirs["inside_volcano"] / "inside_volcano_merged_manifest.csv")})
+        if not args.dry_run:
+            required = []
+            for p in args.points:
+                required.extend([
+                    dirs["event_cache"] / f"events_{p}.npz",
+                    dirs["plots"] / "filtered" / f"theta_phi_counts_{p}.csv",
+                    dirs["inside_volcano"] / "filtered" / p / f"counts_inside_volcano_{p}.csv",
+                ])
+            required.append(dirs["event_cache"] / "event_cache_summary.csv")
+            require_files(required, "04_event_cache_fast reuse")
+
+    # ------------------------------------------------------------------
     # 04. Filtro de muones por Ecrit
     # ------------------------------------------------------------------
     filtered_by_point: dict[str, Path] = {}
-    do_filter = (shw is not None) and (not args.skip_filter)
+    do_filter = (shw is not None) and (not args.skip_filter) and (not args.fast_cache)
     if do_filter:
         print(f"[4/5] Filtrado de muones .shw -> {dirs['filtered']}")
 
@@ -834,15 +1153,17 @@ def main() -> int:
         if not args.dry_run:
             require_files(filtered_by_point.values(), "04_filtered")
 
+    elif args.fast_cache and fast_cache_products_available:
+        print("[4/5] Filtrado .shw omitido: --fast-cache ya generó cache y productos filtered.")
     elif shw is None:
-        print("[4/5] Sin --shw: salto filtrado de muones.")
+        print("[4/5] Sin --shw/cache cinemático: salto filtrado de muones.")
     else:
         print("[4/5] Filtrado omitido por bandera.")
 
     # ------------------------------------------------------------------
     # 05. Mapas θ–φ de conteo
     # ------------------------------------------------------------------
-    make_plots = (shw is not None) and (not args.skip_plots) and (args.plot_source != "none")
+    make_plots = (shw is not None) and (not args.skip_plots) and (args.plot_source != "none") and (not args.fast_cache)
     if make_plots:
         print(f"[5/5] Mapas θ–φ -> {dirs['plots']}")
         sources: list[tuple[str, Path | None]] = []
@@ -902,8 +1223,10 @@ def main() -> int:
                 parallel_jobs=args.parallel_jobs,
             )
         )
+    elif args.fast_cache and fast_cache_products_available:
+        print("[5/5] Mapas θ–φ filtered ya generados por --fast-cache.")
     elif shw is None:
-        print("[5/5] Sin --shw: salto mapas θ–φ.")
+        print("[5/5] Sin --shw/cache cinemático: salto mapas θ–φ.")
     else:
         print("[5/5] Mapas θ–φ omitidos por bandera.")
 
@@ -911,7 +1234,7 @@ def main() -> int:
     # ------------------------------------------------------------------
     # 06. Mapas de cuentas sólo dentro de la geometría del volcán
     # ------------------------------------------------------------------
-    make_inside = (shw is not None) and (args.inside_volcano_source != "none")
+    make_inside = (shw is not None) and (args.inside_volcano_source != "none") and (not args.fast_cache)
     if make_inside:
         print(f"[6/6] Cuentas dentro del volcán + figuras finales -> {dirs['inside_volcano']}")
 
@@ -988,8 +1311,10 @@ def main() -> int:
             "path": str(dirs["inside_volcano"] / "inside_volcano_merged_manifest.csv"),
         })
 
+    elif args.fast_cache and fast_cache_products_available:
+        print("[6/6] Cuentas inside-volcano filtered ya generadas por --fast-cache.")
     elif shw is None:
-        print("[6/6] Sin --shw: salto cuentas dentro de la geometría del volcán.")
+        print("[6/6] Sin --shw/cache cinemático: salto cuentas dentro de la geometría del volcán.")
     else:
         print("[6/6] Cuentas dentro de geometría omitidas (--inside-volcano-source none).")
 
@@ -1129,7 +1454,7 @@ def main() -> int:
     # ------------------------------------------------------------------
     make_smearing = (
         (not args.skip_smearing)
-        and (shw is not None)
+        and ((shw is not None) or fast_cache_products_available)
         and (args.plot_source != "none")
         and (args.inside_volcano_source != "none")
         and (args.scattering_model in ("highland", "both"))
@@ -1226,8 +1551,8 @@ def main() -> int:
                         {"stage": f"08_smearing_{smearing_source}", "point": p, "kind": f"inside_volcano_smearing_table_{tag}", "path": str(smearing_outdir / p / f"inside_volcano_smearing_table_{p}_{tag}.csv")},
                         {"stage": f"08_smearing_{smearing_source}", "point": p, "kind": f"inside_volcano_smearing_comparison_{tag}", "path": str(smearing_outdir / p / f"inside_volcano_smearing_comparison_{p}_{tag}.png")},
                     ])
-    elif shw is None:
-        print("[8/9] Sin --shw: salto smearing angular Highland.")
+    elif shw is None and not fast_cache_products_available:
+        print("[8/9] Sin --shw/cache cinemático: salto smearing angular Highland.")
     elif args.scattering_model in ("highland", "both"):
         print("[8/9] Smearing Highland omitido por bandera o faltan mapas fuente.")
 
@@ -1236,7 +1561,7 @@ def main() -> int:
     # ------------------------------------------------------------------
     make_smearing_empirical = (
         (not args.skip_smearing)
-        and (shw is not None)
+        and ((shw is not None) or fast_cache_products_available)
         and (args.plot_source != "none")
         and (args.inside_volcano_source != "none")
         and (args.scattering_model in ("empirical", "both"))
@@ -1328,8 +1653,8 @@ def main() -> int:
                         {"stage": f"08_smearing_empirical_{smearing_source}", "point": p, "kind": f"inside_volcano_smearing_empirical_table_{tag}", "path": str(smearing_outdir / p / f"inside_volcano_smearing_empirical_table_{p}_{tag}.csv")},
                         {"stage": f"08_smearing_empirical_{smearing_source}", "point": p, "kind": f"inside_volcano_smearing_empirical_comparison_{tag}", "path": str(smearing_outdir / p / f"inside_volcano_smearing_empirical_comparison_{p}_{tag}.png")},
                     ])
-    elif shw is None:
-        print("[8b/9] Sin --shw: salto smearing angular empírico.")
+    elif shw is None and not fast_cache_products_available:
+        print("[8b/9] Sin --shw/cache cinemático: salto smearing angular empírico.")
     elif args.scattering_model in ("empirical", "both"):
         print("[8b/9] Smearing empírico omitido por bandera o faltan mapas fuente.")
 
@@ -1339,7 +1664,7 @@ def main() -> int:
     make_event_mc = (
         args.run_event_mc
         and (not args.skip_event_mc)
-        and (shw is not None)
+        and ((shw is not None) or fast_cache_products_available)
     )
     if make_event_mc:
         if empirical_kernel_library is None:
@@ -1352,23 +1677,42 @@ def main() -> int:
         event_theta_max = args.event_mc_theta_max if args.event_mc_theta_max is not None else args.plot_theta_max
         event_phi_min = args.event_mc_phi_min if args.event_mc_phi_min is not None else args.plot_phi_min
         event_phi_max = args.event_mc_phi_max if args.event_mc_phi_max is not None else args.plot_phi_max
+        event_display_step = args.event_mc_display_step
+        event_kernel_threshold = (
+            args.event_mc_kernel_threshold
+            if args.event_mc_kernel_threshold is not None
+            else args.empirical_kernel_threshold
+        )
         event_sources = ["raw", "filtered"] if args.event_mc_source == "both" else [args.event_mc_source]
 
         for event_source in event_sources:
             if event_source == "filtered":
-                shw_template = str(
-                    filtered_shw_path(dirs["filtered"], input_shw_stem, "{point}", args.filtered_compression)
-                )
+                if args.fast_cache:
+                    shw_template = None
+                    event_cache_template = str(dirs["event_cache"] / "events_{point}.npz")
+                else:
+                    shw_template = str(
+                        filtered_shw_path(dirs["filtered"], input_shw_stem, "{point}", args.filtered_compression)
+                    )
+                    event_cache_template = None
                 event_outdir = dirs["event_mc_empirical"] / "filtered"
             else:
+                if shw is None:
+                    raise RuntimeError(
+                        "Event-MC raw requiere --shw. Con --kinematic-cache/--fast-cache usa "
+                        "--event-mc-source filtered."
+                    )
                 shw_template = None
+                event_cache_template = None
                 event_outdir = dirs["event_mc_empirical"] / "raw"
 
             ensure_dir(event_outdir)
 
             if not args.dry_run:
                 required = [Path(ecrit_template.format(point=p)) for p in args.points]
-                if event_source == "filtered":
+                if event_source == "filtered" and args.fast_cache:
+                    required.extend(Path(event_cache_template.format(point=p)) for p in args.points)
+                elif event_source == "filtered":
                     required.extend(Path(shw_template.format(point=p)) for p in args.points)
                 require_files(required, f"08c_event_mc_empirical inputs ({event_source})")
 
@@ -1391,7 +1735,15 @@ def main() -> int:
                 "--phi-max", str(event_phi_max),
                 "--random-seed", str(args.event_mc_random_seed),
             ]
-            if event_source == "filtered":
+            if event_kernel_threshold is not None:
+                cmd.extend(["--kernel-threshold", str(event_kernel_threshold)])
+            if args.event_mc_max_kernel_radius_mrad is not None:
+                cmd.extend(["--max-kernel-radius-mrad", str(args.event_mc_max_kernel_radius_mrad)])
+            if event_display_step is not None:
+                cmd.extend(["--display-step", str(event_display_step)])
+            if event_source == "filtered" and args.fast_cache:
+                cmd.extend(["--event-cache-template", event_cache_template])
+            elif event_source == "filtered":
                 cmd.extend(["--shw-template", shw_template])
             else:
                 cmd.extend(["--shw", shw])
@@ -1422,8 +1774,235 @@ def main() -> int:
                     {"stage": stage, "point": p, "kind": f"{prefix}_retained_inside_comparison", "path": str(point_dir / f"{prefix}_retained_inside_comparison_{p}.png")},
                     {"stage": stage, "point": p, "kind": "event_mc_summary", "path": str(point_dir / f"event_mc_summary_{p}.csv")},
                 ])
+                if event_display_step is not None and event_display_step > 0.5:
+                    tag = f"bin{event_display_step:.2f}deg".replace(".", "p").replace("-", "m")
+                    output_rows.extend([
+                        {"stage": stage, "point": p, "kind": f"{prefix}_smearing_binned_{tag}_table", "path": str(point_dir / f"{prefix}_smearing_binned_{tag}_table_{p}.csv")},
+                        {"stage": stage, "point": p, "kind": f"{prefix}_smearing_binned_{tag}_comparison", "path": str(point_dir / f"{prefix}_smearing_binned_{tag}_comparison_{p}.png")},
+                        {"stage": stage, "point": p, "kind": f"{prefix}_retained_inside_binned_{tag}_table", "path": str(point_dir / f"{prefix}_retained_inside_binned_{tag}_table_{p}.csv")},
+                        {"stage": stage, "point": p, "kind": f"{prefix}_retained_inside_binned_{tag}_comparison", "path": str(point_dir / f"{prefix}_retained_inside_binned_{tag}_comparison_{p}.png")},
+                    ])
     elif args.run_event_mc and args.skip_event_mc:
         print("[8c/9] Event-by-event empirical MC omitido por --skip-event-mc.")
+
+    # ------------------------------------------------------------------
+    # 08d. Contaminación angular por in-scattering externo -> acceptance
+    # ------------------------------------------------------------------
+    make_in_scattering = (
+        args.run_in_scattering
+        and (not args.skip_in_scattering)
+        and ((shw is not None) or (kinematic_cache is not None))
+    )
+    if make_in_scattering:
+        if empirical_kernel_library is None:
+            raise FileNotFoundError("--empirical-kernel-library es requerido con --run-in-scattering")
+
+        print(f"[8d/9] In-scattering angular-only externo -> acceptance -> {dirs['in_scattering']}")
+        in_scattering_kernel_threshold = (
+            args.in_scattering_kernel_threshold
+            if args.in_scattering_kernel_threshold is not None
+            else args.empirical_kernel_threshold
+        )
+
+        jobs = []
+        for k, p in enumerate(args.points):
+            point_outdir = dirs["in_scattering"] / p
+            ensure_dir(point_outdir)
+            ecrit_csv = dirs["ecrit"] / f"ecrit_table_{p}.csv"
+            if not args.dry_run:
+                require_file(ecrit_csv, f"ecrit/length map para in-scattering ({p})")
+
+            cmd = [
+                sys.executable,
+                scripts["in_scattering"],
+                "--kernel-npz", empirical_kernel_library,
+                "--acceptance-map", ecrit_csv,
+                "--length-map", ecrit_csv,
+                "--output-dir", point_outdir,
+                "--point", p,
+                "--step-m", str(args.in_scattering_step_m),
+                "--n-samples-per-muon", str(args.in_scattering_samples_per_muon),
+                "--seed", str(args.in_scattering_seed + 1009 * k),
+                "--workers", str(args.in_scattering_workers),
+                "--rho", str(args.rho),
+                "--external-length-mode", args.in_scattering_external_length_mode,
+                "--hgt-dir", hgt_dir,
+                "--external-s-max-m", str(args.in_scattering_external_s_max_m),
+                "--external-ray-step-m", str(args.in_scattering_external_ray_step_m),
+                "--length-cache-step-deg", str(args.in_scattering_length_cache_step_deg),
+                "--interp-method", args.empirical_interp_method,
+                "--kernel-threshold", str(in_scattering_kernel_threshold),
+                "--kernel-scale", str(args.in_scattering_kernel_scale),
+            ]
+            if args.in_scattering_max_angular_margin_deg is not None:
+                cmd.extend(["--max-angular-margin-deg", str(args.in_scattering_max_angular_margin_deg)])
+            if args.in_scattering_theta_min_deg is not None:
+                cmd.extend(["--theta-min-deg", str(args.in_scattering_theta_min_deg)])
+            if args.in_scattering_theta_max_deg is not None:
+                cmd.extend(["--theta-max-deg", str(args.in_scattering_theta_max_deg)])
+            if args.in_scattering_phi_min_deg is not None:
+                cmd.extend(["--phi-min-deg", str(args.in_scattering_phi_min_deg)])
+            if args.in_scattering_phi_max_deg is not None:
+                cmd.extend(["--phi-max-deg", str(args.in_scattering_phi_max_deg)])
+            if shw is not None:
+                cmd.extend(["--input-shw", shw, "--shw-format", args.shw_format])
+                if args.shw_member:
+                    cmd.extend(["--shw-member", args.shw_member])
+            else:
+                cmd.extend(["--kinematic-cache", kinematic_cache])
+            if range_file is not None:
+                cmd.extend(["--range-file", range_file])
+            if args.discard_upgoing:
+                cmd.append("--discard-upgoing")
+            if args.in_scattering_disable_scattering:
+                cmd.append("--disable-scattering")
+            if args.in_scattering_debug_trajectories:
+                cmd.append("--debug-trajectories")
+            if args.in_scattering_no_figures:
+                cmd.append("--no-figures")
+            if args.in_scattering_head:
+                cmd.extend(["--head", str(args.in_scattering_head)])
+
+            jobs.append((f"08d_in_scattering_{p}", cmd))
+
+            output_rows.extend([
+                {"stage": "08d_in_scattering", "point": p, "kind": "masked_counts_npy", "path": str(point_outdir / "masked_counts_theta_phi.npy")},
+                {"stage": "08d_in_scattering", "point": p, "kind": "masked_counts_csv", "path": str(point_outdir / "masked_counts_theta_phi.csv")},
+                {"stage": "08d_in_scattering", "point": p, "kind": "source_counts_npy", "path": str(point_outdir / "source_counts_theta_phi.npy")},
+                {"stage": "08d_in_scattering", "point": p, "kind": "source_counts_csv", "path": str(point_outdir / "source_counts_theta_phi.csv")},
+                {"stage": "08d_in_scattering", "point": p, "kind": "summary_json", "path": str(point_outdir / "in_scattering_summary.json")},
+            ])
+            if not args.in_scattering_no_figures:
+                output_rows.extend([
+                    {"stage": "08d_in_scattering", "point": p, "kind": "extended_region_png", "path": str(point_outdir / "extended_angular_region.png")},
+                    {"stage": "08d_in_scattering", "point": p, "kind": "accepted_map_png", "path": str(point_outdir / "in_scattering_accepted_map.png")},
+                    {"stage": "08d_in_scattering", "point": p, "kind": "source_map_png", "path": str(point_outdir / "in_scattering_source_map.png")},
+                    {"stage": "08d_in_scattering", "point": p, "kind": "final_deflection_hist_png", "path": str(point_outdir / "final_deflection_hist.png")},
+                    {"stage": "08d_in_scattering", "point": p, "kind": "initial_energy_hist_png", "path": str(point_outdir / "initial_energy_accepted_hist.png")},
+                    {"stage": "08d_in_scattering", "point": p, "kind": "length_hist_png", "path": str(point_outdir / "rock_length_accepted_hist.png")},
+                ])
+            if args.in_scattering_debug_trajectories:
+                output_rows.append(
+                    {"stage": "08d_in_scattering", "point": p, "kind": "debug_trajectories_csv", "path": str(point_outdir / "debug_accepted_trajectories.csv")}
+                )
+
+        stage_results.extend(
+            run_command_batch(
+                jobs,
+                cwd=outdir,
+                log_dir=dirs["logs"],
+                dry_run=args.dry_run,
+                parallel_jobs=args.parallel_jobs,
+            )
+        )
+    elif args.run_in_scattering and args.skip_in_scattering:
+        print("[8d/9] In-scattering omitido por --skip-in-scattering.")
+    elif args.run_in_scattering:
+        print("[8d/9] In-scattering omitido: falta --shw o --kinematic-cache.")
+
+    # ------------------------------------------------------------------
+    # 08e. In-scattering espacial DEM externo -> máscara angular
+    # ------------------------------------------------------------------
+    make_spatial_in_scattering = (
+        args.run_spatial_in_scattering
+        and (not args.skip_spatial_in_scattering)
+        and (kinematic_cache is not None)
+    )
+    if make_spatial_in_scattering:
+        if empirical_kernel_library is None:
+            raise FileNotFoundError("--empirical-kernel-library es requerido con --run-spatial-in-scattering")
+
+        print(f"[8e/9] In-scattering espacial DEM externo -> máscara angular -> {dirs['in_scattering']}")
+        spatial_kernel_threshold = (
+            args.in_scattering_kernel_threshold
+            if args.in_scattering_kernel_threshold is not None
+            else args.empirical_kernel_threshold
+        )
+
+        jobs = []
+        for k, p in enumerate(args.points):
+            point_outdir = dirs["in_scattering"] / f"{p}_spatial_dem"
+            ensure_dir(point_outdir)
+            ecrit_csv = dirs["ecrit"] / f"ecrit_table_{p}.csv"
+            if not args.dry_run:
+                require_file(ecrit_csv, f"ecrit/length map para in-scattering espacial ({p})")
+
+            cmd = [
+                sys.executable,
+                scripts["spatial_in_scattering"],
+                "--kinematic-cache", kinematic_cache,
+                "--kernel-npz", empirical_kernel_library,
+                "--acceptance-map", ecrit_csv,
+                "--length-map", ecrit_csv,
+                "--output-dir", point_outdir,
+                "--point", p,
+                "--hgt-dir", hgt_dir,
+                "--ray-step-m", str(args.spatial_in_scattering_ray_step_m),
+                "--position-samples-per-muon", str(args.spatial_in_scattering_samples_per_muon),
+                "--sample-probability", str(args.spatial_in_scattering_sample_probability),
+                "--source-surface", args.spatial_in_scattering_source_surface,
+                "--volcano-surface-grid-step-m", str(args.spatial_in_scattering_volcano_surface_grid_step_m),
+                "--volcano-surface-edge-guard-m", str(args.spatial_in_scattering_volcano_surface_edge_guard_m),
+                "--volcano-surface-min-height-frac", str(args.spatial_in_scattering_volcano_surface_min_height_frac),
+                "--volcano-surface-entry-check-m", str(args.spatial_in_scattering_volcano_surface_entry_check_m),
+                "--observer-radius-m", str(args.spatial_in_scattering_observer_radius_m),
+                "--seed", str(args.spatial_in_scattering_seed + 1009 * k),
+                "--rho", str(args.rho),
+                "--interp-method", args.empirical_interp_method,
+                "--kernel-threshold", str(spatial_kernel_threshold),
+                "--kernel-scale", str(args.spatial_in_scattering_kernel_scale),
+            ]
+            if args.spatial_in_scattering_max_angular_margin_deg is not None:
+                cmd.extend(["--max-angular-margin-deg", str(args.spatial_in_scattering_max_angular_margin_deg)])
+            if args.spatial_in_scattering_entry_face_importance:
+                cmd.extend(["--entry-face-importance", args.spatial_in_scattering_entry_face_importance])
+            if range_file is not None:
+                cmd.extend(["--range-file", range_file])
+            if args.spatial_in_scattering_min_survival_rock_m is not None:
+                cmd.extend(["--min-survival-rock-m", str(args.spatial_in_scattering_min_survival_rock_m)])
+            if args.discard_upgoing:
+                cmd.append("--discard-upgoing")
+            if args.spatial_in_scattering_disable_scattering:
+                cmd.append("--disable-scattering")
+            if args.spatial_in_scattering_no_figures:
+                cmd.append("--no-figures")
+            if args.spatial_in_scattering_head:
+                cmd.extend(["--head", str(args.spatial_in_scattering_head)])
+
+            jobs.append((f"08e_spatial_in_scattering_{p}", cmd))
+            output_rows.extend([
+                {"stage": "08e_spatial_in_scattering", "point": p, "kind": "final_counts_npy", "path": str(point_outdir / "spatial_final_counts_theta_phi.npy")},
+                {"stage": "08e_spatial_in_scattering", "point": p, "kind": "final_counts_csv", "path": str(point_outdir / "spatial_final_counts_theta_phi.csv")},
+                {"stage": "08e_spatial_in_scattering", "point": p, "kind": "source_counts_npy", "path": str(point_outdir / "spatial_source_counts_theta_phi.npy")},
+                {"stage": "08e_spatial_in_scattering", "point": p, "kind": "source_counts_csv", "path": str(point_outdir / "spatial_source_counts_theta_phi.csv")},
+                {"stage": "08e_spatial_in_scattering", "point": p, "kind": "accepted_tracks_csv", "path": str(point_outdir / "spatial_accepted_tracks.csv")},
+                {"stage": "08e_spatial_in_scattering", "point": p, "kind": "volcano_surface_target_points_csv", "path": str(point_outdir / "volcano_surface_target_points.csv")},
+                {"stage": "08e_spatial_in_scattering", "point": p, "kind": "summary_json", "path": str(point_outdir / "spatial_in_scattering_summary.json")},
+            ])
+            if not args.spatial_in_scattering_no_figures:
+                output_rows.extend([
+                    {"stage": "08e_spatial_in_scattering", "point": p, "kind": "final_map_png", "path": str(point_outdir / "spatial_final_accepted_map.png")},
+                    {"stage": "08e_spatial_in_scattering", "point": p, "kind": "source_map_png", "path": str(point_outdir / "spatial_source_external_map.png")},
+                    {"stage": "08e_spatial_in_scattering", "point": p, "kind": "accepted_arrows_theta_phi_png", "path": str(point_outdir / "spatial_accepted_muon_arrows_theta_phi.png")},
+                    {"stage": "08e_spatial_in_scattering", "point": p, "kind": "accepted_tracks_xy_png", "path": str(point_outdir / "spatial_accepted_muon_tracks_xy.png")},
+                    {"stage": "08e_spatial_in_scattering", "point": p, "kind": "first_rock_contact_xy_png", "path": str(point_outdir / "spatial_first_rock_contact_xy.png")},
+                    {"stage": "08e_spatial_in_scattering", "point": p, "kind": "volcano_surface_target_points_xy_png", "path": str(point_outdir / "volcano_surface_target_points_xy.png")},
+                    {"stage": "08e_spatial_in_scattering", "point": p, "kind": "rock_length_hist_png", "path": str(point_outdir / "spatial_accepted_rock_length_hist.png")},
+                ])
+
+        stage_results.extend(
+            run_command_batch(
+                jobs,
+                cwd=outdir,
+                log_dir=dirs["logs"],
+                dry_run=args.dry_run,
+                parallel_jobs=args.parallel_jobs,
+            )
+        )
+    elif args.run_spatial_in_scattering and args.skip_spatial_in_scattering:
+        print("[8e/9] In-scattering espacial omitido por --skip-spatial-in-scattering.")
+    elif args.run_spatial_in_scattering:
+        print("[8e/9] In-scattering espacial omitido: falta --kinematic-cache.")
 
     # ------------------------------------------------------------------
     # 09. Figuras 2x2 tipo artículo, opcional
@@ -1494,6 +2073,7 @@ def main() -> int:
 
     # Índices finales
     write_outputs_index(outdir, output_rows)
+    removed_empty_dirs = [] if args.dry_run else cleanup_empty_run_dirs(outdir)
     manifest = {
         "created_at": now_stamp(),
         "parameters": vars(args),
@@ -1503,10 +2083,15 @@ def main() -> int:
             "range_file": str(range_file) if range_file else None,
             "empirical_kernel_library": str(empirical_kernel_library) if empirical_kernel_library else None,
             "shw": str(shw) if shw else None,
+            "kinematic_cache": str(kinematic_cache) if kinematic_cache else None,
             "outdir": str(outdir),
         },
         "compute_backend": compute_backend,
         "directories": {k: str(v) for k, v in dirs.items()},
+        "cleanup": {
+            "removed_empty_dirs": [str(p) for p in removed_empty_dirs],
+            "preserved_empty_dir_names": ["07_scattering", "08_smearing"],
+        },
         "stages": [asdict(r) for r in stage_results],
     }
     with (outdir / "run_manifest.json").open("w", encoding="utf-8") as f:

@@ -20,8 +20,10 @@ Este repositorio organiza una cadena reproducible para construir muogramas simul
 5. y una máscara angular de roca volcánica.
 
 > Nota de estado: en esta carpeta los scripts de etapa viven en `modulos/`.
-> El punto de entrada recomendado es `orquestador_machin.py`, que ahora delega
-> al orquestador unificado con event-MC y autodetecta `modulos/`, `data/` y
+> El punto de entrada mas simple para uso diario es `cabriales.py`, con presets
+> como `smoke`, `machin90d`, `background90d` y `all90d`. Internamente delega en
+> `orquestador_machin.py`, que a su vez usa el orquestador unificado con
+> event-MC y autodetecta `modulos/`, `data/` y
 > `modulos/empirical_kernel_library.npz`. Para una receta corta y actualizada,
 > ver `USO_RAPIDO.md`.
 >
@@ -49,6 +51,19 @@ Entradas soportadas para `--shw`: `.shw`, `.shw.gz`, `.shw.xz`, `.shw.bz2`,
 formato CNF de 9 columnas usa `--shw-format cnf9`; si el tar contiene varios
 archivos, usa `--shw-member ruta/interna.shw`. Para ahorrar espacio en corridas
 grandes, `--storage-profile compact` escribe los filtrados como `.shw.gz`.
+
+Para corridas grandes `filtered-only`, la ruta recomendada es `--fast-cache`.
+Lee el `.shw` una sola vez, no escribe `04_filtered/*.shw.gz`, guarda eventos
+compactos en `04_event_cache/events_P*.npz` y produce directamente los mapas
+`05_plots/filtered` y `06_inside_volcano/filtered` que consumen smearing y
+event-MC. En la prueba P1 de Bucaramanga 12h bajó de `467M` a `32M` de salida y
+de ~`393 s` a `214.7 s`, conservando el mapa filtrado (`241335` cuentas) y el
+event-MC inside (`1389 -> 1389`). Receta completa en `USO_RAPIDO.md`.
+
+Para entradas de varios días, se puede construir además un cache cinemático
+global con `modulos/04_build_kinematic_cache.py`. Ese cache separa el parseo del
+`.shw` de la física por punto y permite que `--fast-cache --kinematic-cache ...`
+reutilice arrays compactos en vez de volver a leer el tar/texto completo.
 
 La cadena completa ejecuta:
 

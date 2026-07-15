@@ -36,6 +36,15 @@ try:
 except Exception as exc:  # pragma: no cover
     raise SystemExit("scipy is required for empirical-kernel interpolation") from exc
 
+try:
+    from empirical_kernel_io import load_empirical_kernel_library
+    from plot_style import apply_scientific_style
+except ModuleNotFoundError:  # pragma: no cover
+    import sys
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from empirical_kernel_io import load_empirical_kernel_library
+    from plot_style import apply_scientific_style
+
 MUON_MASS_GEV = 0.10565837
 DEFAULT_POINTS = ("P1", "P2", "P4", "P5")
 VALUE_CANDIDATES = (
@@ -46,25 +55,7 @@ VALUE_CANDIDATES = (
 
 
 def setup_style() -> None:
-    plt.rcParams.update({
-        "figure.dpi": 120,
-        "savefig.dpi": 300,
-        "font.size": 10,
-        "axes.labelsize": 11,
-        "axes.titlesize": 11,
-        "xtick.labelsize": 9,
-        "ytick.labelsize": 9,
-        "axes.linewidth": 0.9,
-        "xtick.direction": "in",
-        "ytick.direction": "in",
-        "xtick.top": True,
-        "ytick.right": True,
-        "xtick.major.size": 4,
-        "ytick.major.size": 4,
-        "xtick.minor.size": 2,
-        "ytick.minor.size": 2,
-        "axes.grid": False,
-    })
+    apply_scientific_style()
 
 
 def factor_tag(factor: float) -> str:
@@ -125,18 +116,14 @@ class EmpiricalKernelModel:
     def __init__(self, npz_path: Path, interp_method: str = "rbf_linear"):
         self.path = Path(npz_path)
         self.interp_method = interp_method
-        data = np.load(self.path, allow_pickle=False)
-        required = ["centers_mrad", "edges_mrad", "probabilities", "L_m", "E_in_GeV", "clean_for_kernel"]
-        missing = [k for k in required if k not in data.files]
-        if missing:
-            raise KeyError(f"Kernel library missing keys: {missing}. Available: {data.files}")
-
-        self.centers_mrad = np.asarray(data["centers_mrad"], dtype=float)
-        self.edges_mrad = np.asarray(data["edges_mrad"], dtype=float)
-        self.probabilities = np.asarray(data["probabilities"], dtype=float)
-        self.L_m = np.asarray(data["L_m"], dtype=float)
-        self.E_in_GeV = np.asarray(data["E_in_GeV"], dtype=float)
-        self.clean_for_kernel = np.asarray(data["clean_for_kernel"], dtype=bool)
+        lib = load_empirical_kernel_library(self.path)
+        self.kernel_family = lib.family
+        self.centers_mrad = lib.centers_mrad
+        self.edges_mrad = lib.edges_mrad
+        self.probabilities = lib.probabilities
+        self.L_m = lib.L_m
+        self.E_in_GeV = lib.E_in_GeV
+        self.clean_for_kernel = lib.clean_for_kernel
 
         if self.probabilities.shape != (self.L_m.size, self.centers_mrad.size):
             raise ValueError(
@@ -708,7 +695,7 @@ def parser():
     ap.add_argument("--ecrit-dir", type=Path, default=None)
     ap.add_argument("--kernel-library", type=Path, default=None, help="Path to empirical_kernel_library.npz")
     ap.add_argument("--outdir", type=Path, default=Path("outputs_smearing_empirical"))
-    ap.add_argument("--interp-method", choices=["rbf_linear", "linear", "nearest"], default="rbf_linear")
+    ap.add_argument("--interp-method", choices=["rbf_linear", "linear", "nearest"], default="linear")
     ap.add_argument("--value-col", default=None)
 
     ap.add_argument("--theta-min", type=float, default=None, help="Mínimo theta a usar. Default: inferido desde CSV")

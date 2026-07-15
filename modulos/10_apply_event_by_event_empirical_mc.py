@@ -69,6 +69,14 @@ except Exception as exc:  # pragma: no cover
     raise RuntimeError("This script needs scipy. Install it with: pip install scipy") from exc
 
 try:
+    from empirical_kernel_io import load_empirical_kernel_library
+    from plot_style import apply_scientific_style
+except ModuleNotFoundError:  # pragma: no cover
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from empirical_kernel_io import load_empirical_kernel_library
+    from plot_style import apply_scientific_style
+
+try:
     from tqdm import tqdm
 except Exception:  # pragma: no cover
     class tqdm:
@@ -98,23 +106,7 @@ POINTS = {
 # Small utilities
 # -----------------------------------------------------------------------------
 def setup_style() -> None:
-    plt.rcParams.update({
-        "figure.dpi": 120,
-        "savefig.dpi": 300,
-        "font.size": 10,
-        "axes.labelsize": 11,
-        "axes.titlesize": 11,
-        "xtick.labelsize": 9,
-        "ytick.labelsize": 9,
-        "axes.linewidth": 0.9,
-        "xtick.direction": "in",
-        "ytick.direction": "in",
-        "xtick.top": True,
-        "ytick.right": True,
-        "xtick.major.size": 4,
-        "ytick.major.size": 4,
-        "axes.grid": False,
-    })
+    apply_scientific_style()
 
 
 def azimuth_deg(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
@@ -190,14 +182,15 @@ class KernelPrediction:
 
 class EmpiricalKernelModel:
     def __init__(self, npz_path: Path, interp_method: str = "linear", rbf_smoothing: float = 0.0) -> None:
-        lib = np.load(npz_path)
-        self.centers_mrad = np.asarray(lib["centers_mrad"], dtype=float)
-        self.edges_mrad = np.asarray(lib["edges_mrad"], dtype=float)
+        lib = load_empirical_kernel_library(npz_path)
+        self.kernel_family = lib.family
+        self.centers_mrad = lib.centers_mrad
+        self.edges_mrad = lib.edges_mrad
         self.widths_mrad = np.diff(self.edges_mrad)
-        self.probabilities = np.asarray(lib["probabilities"], dtype=float)
-        self.L_m = np.asarray(lib["L_m"], dtype=float)
-        self.E_in_GeV = np.asarray(lib["E_in_GeV"], dtype=float)
-        self.clean = np.asarray(lib["clean_for_kernel"], dtype=bool)
+        self.probabilities = lib.probabilities
+        self.L_m = lib.L_m
+        self.E_in_GeV = lib.E_in_GeV
+        self.clean = lib.clean_for_kernel
 
         self.interp_method = interp_method
         self.rbf_smoothing = rbf_smoothing
@@ -262,7 +255,7 @@ class EmpiricalKernelModel:
         outside = bool(np.any(q < self.X_min) or np.any(q > self.X_max))
         used_nearest = False
 
-        if self.interp_method == "nearest":
+        if self.interp_method == "nearest" or outside:
             pred = self.nearest(q)
             used_nearest = True
         elif self.interp_method == "linear":

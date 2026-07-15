@@ -51,3 +51,5 @@ data/*
 
 # Large/derived analysis folders
 muones_criticos_geant4/extreme_scattering_results/
+# Local experimental kernel builds; keep modulos/empirical_kernel_library.npz tracked.
+modulos/hybrid_empirical_kernel_library.npz
