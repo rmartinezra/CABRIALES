@@ -11,10 +11,14 @@
 - puntos de transporte full-tail: 181;
 - método predeterminado: `tail-aware`.
 
-El predictor usa transporte de cuantiles para el cuerpo y mezcla histogramas
-medidos locales entre `250` y `300 mrad`. Por encima de `300 mrad` usa la cola
-local medida para conservar sucesos raros y hard scattering. CABRIALES aplica
-un umbral de densidad igual a cero por defecto.
+Dentro del dominio full-tail cercano al umbral, el predictor usa transporte de
+cuantiles para el cuerpo y mezcla histogramas medidos locales entre `250` y
+`300 mrad`. Por encima de `300 mrad` usa la cola local medida para conservar
+sucesos raros y hard scattering. Fuera de ese dominio CABRIALES usa la familia
+core de rango energético amplio del mismo archivo, mediante el RBF lineal
+validado al construir el modelo. Esta separación sigue la metadata original y
+evita extrapolar colas cercanas al umbral a muones de alta energía. El umbral
+de densidad aplicado es cero.
 
 ## Prueba de integración
 
@@ -32,6 +36,10 @@ Resultado para `L=80 m` y `E=39.67 GeV`:
 - `P(|theta| > 1000 mrad) = 1.308339e-6`;
 - interpolación: bilineal sobre la grilla de transporte;
 - política: cuerpo por cuantiles y cola por histograma local.
+
+Una consulta de alta energía, por ejemplo `L=100 m` y `E=200 GeV`, usa el core
+empírico amplio y produce un RMS cercano a `3.0 mrad`, sin reutilizar la cola
+full-tail de energías cercanas al umbral.
 
 ## Estado de los resultados del artículo
 

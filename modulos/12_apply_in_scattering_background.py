@@ -1418,7 +1418,7 @@ def main(argv=None) -> int:
             "length_cache_step_deg": float(args.length_cache_step_deg),
             "interp_method": args.interp_method,
             "kernel_family": model.kernel_family,
-            "kernel_tail_policy": "body_quantile_tail_histogram_linear" if args.interp_method == "tail-aware" else "legacy",
+            "kernel_tail_policy": model.tail_aware.policy_description if model.tail_aware is not None else "legacy",
             "kernel_support_mrad": [float(model.edges_mrad[0]), float(model.edges_mrad[-1])],
             "kernel_energy_cache_dlog": float(model.tail_aware.energy_cache_dlog) if model.tail_aware is not None else 0.0,
             "kernel_threshold": float(args.kernel_threshold),

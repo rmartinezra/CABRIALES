@@ -383,7 +383,7 @@ def write_campaign_summary(out_root: Path, rows: list[dict[str, object]], cfg: T
             "path": str(resolve_from_root(root, args.kernel_npz)),
             "interp_method": args.interp_method,
             "kernel_threshold": float(args.kernel_threshold),
-            "tail_policy": "body_quantile_tail_histogram_linear" if args.interp_method == "tail-aware" else "legacy",
+            "tail_policy": "tail-aware_full-tail-domain__core-rbf_broad-domain" if args.interp_method == "tail-aware" else "legacy",
         },
         "status": "ok" if len(ok_rows) == len(rows) else "partial_or_failed",
         "totals": totals,

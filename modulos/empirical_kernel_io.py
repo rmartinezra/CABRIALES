@@ -10,6 +10,12 @@ from pathlib import Path
 import numpy as np
 
 try:
+    from scipy.interpolate import RBFInterpolator
+    from scipy.spatial import Delaunay
+except Exception as exc:  # pragma: no cover - CABRIALES requires scipy
+    raise RuntimeError("scipy is required for hybrid empirical-kernel interpolation") from exc
+
+try:
     from tail_aware_transport import LocalQuantileTransport, estimate_t50, load_npz
 except ModuleNotFoundError:  # pragma: no cover - package import
     from modulos.tail_aware_transport import LocalQuantileTransport, estimate_t50, load_npz
@@ -158,18 +164,82 @@ class TailAwareKernelPrediction:
     tail_policy: str
 
 
-class TailAwareEmpiricalKernel:
-    """Predict normalized full-tail kernels without smoothing away rare tails.
+class _CoreKernelInterpolator:
+    """Interpolate the broad-domain measured core exactly as built upstream."""
 
-    The body is interpolated through inverse-CDF transport. Beyond 250 mrad it
-    transitions to local measured histograms and uses them fully at 300 mrad.
-    This preserves non-Gaussian and hard-scattering tails out to +/-1600 mrad.
+    def __init__(self, model: dict[str, np.ndarray]) -> None:
+        self.centers = np.asarray(model["core_centers_mrad"], dtype=float)
+        self.edges = np.asarray(model["core_edges_mrad"], dtype=float)
+        probability = np.asarray(model["core_probabilities"], dtype=float)
+        length = np.asarray(model["core_L_m"], dtype=float)
+        energy = np.asarray(model["core_E_in_GeV"], dtype=float)
+        clean = np.asarray(model["core_clean_for_kernel"], dtype=bool)
+        valid = (
+            clean
+            & np.isfinite(length) & (length > 0.0)
+            & np.isfinite(energy) & (energy > 0.0)
+            & np.isfinite(probability).all(axis=1)
+            & (probability.sum(axis=1) > 0.0)
+        )
+        if np.count_nonzero(valid) < 4:
+            raise RuntimeError("Too few clean core kernels in hybrid library.")
+        self.probability = probability[valid]
+        self.features = np.column_stack([np.log10(length[valid]), np.log10(energy[valid])])
+        self.mean = self.features.mean(axis=0)
+        self.std = self.features.std(axis=0)
+        self.std[self.std == 0.0] = 1.0
+        self.scaled = (self.features - self.mean) / self.std
+        self.rbf = RBFInterpolator(self.scaled, self.probability, kernel="linear", smoothing=0.0)
+        self.tri = Delaunay(self.features)
+
+    @staticmethod
+    def _normalize(probability: np.ndarray) -> tuple[np.ndarray, bool]:
+        probability = np.asarray(probability, dtype=float).copy()
+        probability[~np.isfinite(probability)] = 0.0
+        probability[probability < 0.0] = 0.0
+        total = float(probability.sum())
+        if total <= 0.0 or not np.isfinite(total):
+            return probability, False
+        probability /= total
+        probability = 0.5 * (probability + probability[::-1])
+        probability /= probability.sum()
+        return probability, True
+
+    def predict(self, L_m: float, E_GeV: float) -> tuple[np.ndarray, str, bool, bool, bool]:
+        query = np.array([np.log10(float(L_m)), np.log10(float(E_GeV))], dtype=float)
+        outside = bool(self.tri.find_simplex(query[None, :])[0] < 0)
+        used_nearest = outside
+        if outside:
+            index = int(np.argmin(np.sum((self.features - query[None, :]) ** 2, axis=1)))
+            raw = self.probability[index]
+            mode = "core_nearest"
+        else:
+            scaled_query = (query - self.mean) / self.std
+            raw = np.asarray(self.rbf(scaled_query[None, :])[0], dtype=float)
+            mode = "core_rbf_linear"
+        probability, valid = self._normalize(raw)
+        if not valid and not outside:
+            index = int(np.argmin(np.sum((self.features - query[None, :]) ** 2, axis=1)))
+            probability, valid = self._normalize(self.probability[index])
+            used_nearest = True
+            mode = "core_nearest"
+        return probability, mode, outside, used_nearest, valid
+
+
+class TailAwareEmpiricalKernel:
+    """Dispatch between broad core and near-threshold full-tail interpolation.
+
+    Inside the measured full-tail domain, the body uses inverse-CDF transport
+    and the hard-scattering tail uses local measured histograms. Outside that
+    domain, the model's broad core family is interpolated in (L, E), as required
+    by the model metadata, and embedded in the common +/-1600 mrad output grid.
     """
 
     method = "tail-aware"
     tail_start_mrad = 250.0
     tail_full_mrad = 300.0
     tail_interp = "linear"
+    policy_description = "tail-aware_full-tail-domain__core-rbf_broad-domain"
 
     def __init__(
         self,
@@ -189,7 +259,8 @@ class TailAwareEmpiricalKernel:
             )
         self._model = model
         self._transport = LocalQuantileTransport(model, k_nearest=k_nearest)
-        self.kernel_family = "full_tail_transport"
+        self._core = _CoreKernelInterpolator(model)
+        self.kernel_family = "hybrid_core_and_full_tail_transport"
         self.edges_mrad = self._transport.edges.copy()
         self.centers_mrad = self._transport.centers.copy()
         self.widths_mrad = np.diff(self.edges_mrad)
@@ -200,6 +271,25 @@ class TailAwareEmpiricalKernel:
         self.energy_cache_dlog = float(energy_cache_dlog)
         self.max_cache_items = max(0, int(max_cache_items))
         self._prediction_cache: OrderedDict[tuple[float, int], TailAwareKernelPrediction] = OrderedDict()
+        core_indices = np.searchsorted(self.centers_mrad, self._core.centers)
+        if np.any(core_indices >= self.centers_mrad.size) or not np.allclose(
+            self.centers_mrad[core_indices], self._core.centers
+        ):
+            raise RuntimeError("Core and full-tail angular grids are not aligned.")
+        self._core_indices = core_indices
+
+    def _inside_full_tail_domain(self, L_m: float, E_GeV: float, t50_GeV: float) -> bool:
+        feature = np.array([np.log10(float(L_m)), np.log10(float(E_GeV) / t50_GeV)], dtype=float)
+        if self._transport.tri is not None:
+            return bool(self._transport.tri.find_simplex(feature[None, :])[0] >= 0)
+        minimum = self._transport.features.min(axis=0)
+        maximum = self._transport.features.max(axis=0)
+        return bool(np.all(feature >= minimum) and np.all(feature <= maximum))
+
+    def _embed_core(self, probability: np.ndarray) -> np.ndarray:
+        embedded = np.zeros_like(self.centers_mrad, dtype=float)
+        embedded[self._core_indices] = probability
+        return embedded
 
     def _cache_key_and_energy(self, L_m: float, E_GeV: float) -> tuple[tuple[float, int] | None, float]:
         if self.energy_cache_dlog <= 0.0 or self.max_cache_items <= 0:
@@ -228,15 +318,28 @@ class TailAwareEmpiricalKernel:
 
         try:
             t50 = estimate_t50(self._model, float(L_m))
-            probability, info = self._transport.predict_pdf(
-                float(L_m),
-                energy_use,
-                t50,
-                method=self.method,
-                tail_start_mrad=self.tail_start_mrad,
-                tail_full_mrad=self.tail_full_mrad,
-                tail_interp=self.tail_interp,
-            )
+            if self._inside_full_tail_domain(float(L_m), energy_use, t50):
+                probability, info = self._transport.predict_pdf(
+                    float(L_m),
+                    energy_use,
+                    t50,
+                    method=self.method,
+                    tail_start_mrad=self.tail_start_mrad,
+                    tail_full_mrad=self.tail_full_mrad,
+                    tail_interp=self.tail_interp,
+                )
+                mode = str(info.get("mode", "unknown"))
+                outside = False
+                used_nearest = mode == "nearest"
+                tail_policy = str(info.get("tail_policy", "unknown"))
+            else:
+                core_probability, mode, outside, used_nearest, core_valid = self._core.predict(
+                    float(L_m), energy_use
+                )
+                if not core_valid:
+                    raise RuntimeError("Core interpolation produced an empty PDF.")
+                probability = self._embed_core(core_probability)
+                tail_policy = "broad_domain_core_measured_support"
         except (FloatingPointError, RuntimeError, ValueError):
             return TailAwareKernelPrediction(
                 self.centers_mrad.copy(),
@@ -258,16 +361,14 @@ class TailAwareEmpiricalKernel:
             probability = 0.5 * (probability + probability[::-1])
             probability /= probability.sum()
 
-        mode = str(info.get("mode", "unknown"))
-        outside = mode in {"nearest", "grid_clamped_L"}
         prediction = TailAwareKernelPrediction(
             self.centers_mrad.copy(),
             probability,
-            mode == "nearest",
+            used_nearest,
             outside,
             valid,
             mode,
-            str(info.get("tail_policy", "unknown")),
+            tail_policy,
         )
         if cache_key is not None:
             self._prediction_cache[cache_key] = prediction

@@ -695,7 +695,7 @@ def process_point(payload: dict) -> ProcessResult:
         "kernel_library": str(payload["kernel_library"]),
         "interp_method": payload["interp_method"],
         "kernel_family": model.kernel_family,
-        "kernel_tail_policy": "body_quantile_tail_histogram_linear" if payload["interp_method"] == "tail-aware" else "legacy",
+        "kernel_tail_policy": model.tail_aware.policy_description if model.tail_aware is not None else "legacy",
         "kernel_support_mrad": f"{model.edges_mrad[0]:g},{model.edges_mrad[-1]:g}",
         "source_mode": payload["source_mode"],
         "random_seed": int(payload["random_seed"]),

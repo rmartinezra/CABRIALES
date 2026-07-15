@@ -85,6 +85,15 @@ sin modificar resultados:
 python3 cabriales.py full --dry-run
 ```
 
+Para una corrida integrada limitada a los primeros `N` eventos Monte Carlo por
+punto, usar `--head N`. El límite se aplica al event-by-event MC y al background
+espacial; geometría, longitudes y mapas deterministas siguen usando el cache
+completo:
+
+```bash
+python3 cabriales.py full --points P1 --head 10000000 --force
+```
+
 ### Kernel MCS full-tail
 
 CABRIALES incluye y usa por defecto
@@ -92,11 +101,13 @@ CABRIALES incluye y usa por defecto
 simulaciones, una grilla central de `-300` a `300 mrad` y colas completas de
 `-1600` a `1600 mrad`, ambas con bins de `1 mrad`.
 
-El método predeterminado es `tail-aware`: interpola el cuerpo mediante
-transporte de cuantiles y, entre `250` y `300 mrad`, transiciona a histogramas
-medidos locales. Más allá de `300 mrad` conserva directamente esas colas para
-no suavizar el hard scattering. Por la misma razón, el corte de densidad
-predeterminado es cero.
+El método predeterminado es híbrido. Dentro del dominio full-tail cercano al
+umbral, `tail-aware` interpola el cuerpo mediante transporte de cuantiles y,
+entre `250` y `300 mrad`, transiciona a histogramas medidos locales; más allá
+de `300 mrad` conserva directamente esas colas. Fuera de ese dominio usa la
+familia core amplia del mismo archivo, interpolada en longitud y energía. Esto
+respeta la metadata del modelo y evita extrapolar colas cercanas al umbral a
+muones de energía mucho mayor. El corte de densidad predeterminado es cero.
 
 En las rutas evento por evento y espaciales, una caché LRU cuantiza únicamente
 la energía en pasos de `dlog(E)=0.02`. Esa resolución es más fina que la grilla

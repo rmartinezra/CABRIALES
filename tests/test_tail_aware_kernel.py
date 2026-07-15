@@ -41,6 +41,14 @@ class TailAwareKernelTest(unittest.TestCase):
         self.assertGreater(float(probability[np.abs(centers) > 1000.0].sum()), 1e-8)
         self.assertEqual(self.prediction.tail_policy, "body_quantile_tail_histogram_linear")
 
+    def test_high_energy_query_uses_broad_core_model(self) -> None:
+        prediction = self.model.predict_kernel(100.0, 200.0)
+        self.assertTrue(prediction.valid)
+        self.assertEqual(prediction.interpolation_mode, "core_rbf_linear")
+        self.assertEqual(prediction.tail_policy, "broad_domain_core_measured_support")
+        self.assertFalse(prediction.outside_domain)
+        self.assertAlmostEqual(float(prediction.probability_per_bin.sum()), 1.0, places=12)
+
 
 if __name__ == "__main__":
     unittest.main()

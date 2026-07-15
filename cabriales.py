@@ -133,6 +133,8 @@ def build_machin90d_cmd(args: argparse.Namespace, extra: list[str]) -> list[obje
         cmd.append("--discard-upgoing")
     if args.skip_event_mc:
         cmd.append("--skip-event-mc")
+    if args.head > 0:
+        cmd.extend(["--event-mc-head", str(args.head)])
     append_force(cmd, args.force)
     cmd.extend(extra)
     return cmd
@@ -160,6 +162,8 @@ def build_background90d_cmd(
         "--points", *point_args(args.points),
         "--status-interval-s", str(args.status_interval_s),
     ]
+    if args.head > 0:
+        cmd.extend(["--head", str(args.head)])
     if args.no_figures:
         cmd.append("--no-figures")
     if args.continue_on_existing:
@@ -334,6 +338,7 @@ def build_parser() -> argparse.ArgumentParser:
     mach.add_argument("--workers", type=int, default=0, help="0 autodetecta en el orquestador.")
     mach.add_argument("--kernel-npz", default=str(DEFAULT_KERNEL))
     mach.add_argument("--empirical-kernel-threshold", type=float, default=0.0)
+    mach.add_argument("--head", type=int, default=0, help="Limita el event-MC por punto; 0 usa todos los eventos.")
     mach.add_argument("--discard-upgoing", action="store_true")
     mach.add_argument("--skip-event-mc", action="store_true")
     mach.add_argument("--force", action="store_true")
@@ -352,6 +357,7 @@ def build_parser() -> argparse.ArgumentParser:
     bg.add_argument("--seed", type=int, default=12345)
     bg.add_argument("--kernel-npz", default=str(DEFAULT_KERNEL))
     bg.add_argument("--empirical-kernel-threshold", type=float, default=0.0)
+    bg.add_argument("--head", type=int, default=0, help="Limita los eventos de flujo por punto; 0 usa todo el cache.")
     bg.add_argument("--force", action="store_true")
     bg.add_argument("--continue-on-existing", action="store_true")
     bg.add_argument("--no-figures", action="store_true")
@@ -377,6 +383,7 @@ def build_parser() -> argparse.ArgumentParser:
     all90d.add_argument("--seed", type=int, default=12345)
     all90d.add_argument("--kernel-npz", default=str(DEFAULT_KERNEL))
     all90d.add_argument("--empirical-kernel-threshold", type=float, default=0.0)
+    all90d.add_argument("--head", type=int, default=0, help="Limita event-MC y background por punto; 0 usa todo el cache.")
     all90d.add_argument("--discard-upgoing", action="store_true")
     all90d.add_argument("--skip-event-mc", action="store_true")
     all90d.add_argument("--force", action="store_true")
@@ -393,6 +400,8 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args, extra = parser.parse_known_args(argv)
+    if getattr(args, "head", 0) < 0:
+        parser.error("--head must be non-negative")
     if extra and extra[0] == "--":
         extra = extra[1:]
     return int(args.func(args, extra))

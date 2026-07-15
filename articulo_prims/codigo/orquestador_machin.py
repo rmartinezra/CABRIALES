@@ -605,6 +605,8 @@ def build_parser() -> argparse.ArgumentParser:
                     help="Radio máximo opcional del kernel en el MC evento-por-evento.")
     ap.add_argument("--event-mc-random-seed", type=int, default=12345,
                     help="Semilla RNG para el MC evento-por-evento.")
+    ap.add_argument("--event-mc-head", type=int, default=0,
+                    help="Limita los eventos procesados por punto en el event-MC; 0 usa todos.")
     ap.add_argument("--event-mc-theta-min", type=float, default=None,
                     help="Theta mínimo para el canvas del MC evento-por-evento. Default: usa --plot-theta-min.")
     ap.add_argument("--event-mc-theta-max", type=float, default=None,
@@ -1785,6 +1787,8 @@ def main() -> int:
                 cmd.extend(["--max-kernel-radius-mrad", str(args.event_mc_max_kernel_radius_mrad)])
             if event_display_step is not None:
                 cmd.extend(["--display-step", str(event_display_step)])
+            if args.event_mc_head:
+                cmd.extend(["--head", str(args.event_mc_head)])
             if event_source == "filtered" and args.fast_cache:
                 cmd.extend(["--event-cache-template", event_cache_template])
             elif event_source == "filtered":

@@ -29,8 +29,9 @@ python3 cabriales.py kernel-smoke
 ```
 
 El pipeline usa por defecto `modulos/hybrid_empirical_kernel_library.npz` con
-interpolación `tail-aware`, soporte de `-1600` a `1600 mrad` y umbral cero para
-preservar las colas de hard scattering.
+despacho híbrido: `tail-aware` dentro del dominio full-tail cercano al umbral y
+core empírico para el dominio amplio de energía. El soporte común es de
+`-1600` a `1600 mrad` y el umbral es cero.
 
 ## 3. Corrida completa de 90 días
 
