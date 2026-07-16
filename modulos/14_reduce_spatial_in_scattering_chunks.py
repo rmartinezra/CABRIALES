@@ -184,6 +184,19 @@ def main(argv=None) -> int:
             "accepted_count_90d": accepted_sum,
             "probability_per_flux_muon": float(accepted_sum / n_flux) if n_flux else None,
             "diagnostic_per_day_per_m2": float(accepted_sum / 90.0),
+            "ideal_surface_rate_muons_per_m2_day": float(accepted_sum / 90.0),
+            "ideal_surface_rate_definition": (
+                "weighted_accepted_count / 90 days using the original 1 m2 CNF flux normalization; "
+                "this is an ideal injection-surface rate, not a detector rate"
+            ),
+            "equivalent_area_scaled_exposure_days_for_mc_count": float(90.0 / area) if area > 0.0 else None,
+            "equivalent_area_scaled_exposure_seconds_for_mc_count": (
+                float(90.0 * 86400.0 / area) if area > 0.0 else None
+            ),
+            "equivalent_exposure_definition": (
+                "time needed on the full effective injection area to accumulate the same weighted accepted "
+                "count as the 90-day, 1 m2 Monte Carlo normalization"
+            ),
             "area_scaled_count_90d": float(accepted_sum * area),
             "area_scaled_count_per_day": float(accepted_sum * area / 90.0),
             "poisson95_area_scaled_count_90d_low": float(lo * area),
@@ -228,6 +241,7 @@ def main(argv=None) -> int:
     }
 
     if not args.no_figures:
+        point_label = str(first.get("point", "P"))
         final_png = args.output_dir / "spatial_final_accepted_map.png"
         source_png = args.output_dir / "spatial_source_external_map.png"
         plot_grid_csv(final_png, args.output_dir / "spatial_final_counts_theta_phi.csv", "in_scattering_count", "Spatial DEM: final directions inside volcano mask", "Counts")
@@ -238,9 +252,9 @@ def main(argv=None) -> int:
             contact_png = args.output_dir / "spatial_first_rock_contact_xy.png"
             fig, ax = plt.subplots(figsize=(7.2, 6.2), constrained_layout=True)
             sc = ax.scatter(tracks["first_rock_x_m"] / 1000.0, tracks["first_rock_y_m"] / 1000.0, c=tracks["rock_length_m"], s=34, cmap="magma", alpha=0.86, edgecolor="white", linewidth=0.35)
-            ax.scatter([0.0], [0.0], marker="*", s=130, color="black", label=str(first.get("point", "P")))
-            ax.set_xlabel("East from P1 (km)")
-            ax.set_ylabel("North from P1 (km)")
+            ax.scatter([0.0], [0.0], marker="*", s=130, color="black", label=point_label)
+            ax.set_xlabel(f"East from {point_label} (km)")
+            ax.set_ylabel(f"North from {point_label} (km)")
             ax.set_title("Accepted in-scattering first DEM-rock contact points")
             ax.set_aspect("equal", adjustable="box")
             ax.grid(True, alpha=0.25)
@@ -263,9 +277,9 @@ def main(argv=None) -> int:
             target_png = args.output_dir / "volcano_surface_target_points_xy.png"
             fig, ax = plt.subplots(figsize=(7.2, 6.2), constrained_layout=True)
             sc = ax.scatter(target["x_m"] / 1000.0, target["y_m"] / 1000.0, c=target["height_fraction"], s=12, cmap="viridis", alpha=0.82, linewidths=0.0)
-            ax.scatter([0.0], [0.0], marker="*", s=130, color="black", label=str(first.get("point", "P")))
-            ax.set_xlabel("East from P1 (km)")
-            ax.set_ylabel("North from P1 (km)")
+            ax.scatter([0.0], [0.0], marker="*", s=130, color="black", label=point_label)
+            ax.set_xlabel(f"East from {point_label} (km)")
+            ax.set_ylabel(f"North from {point_label} (km)")
             ax.set_title("Volcano-surface target points selected from DEM and angular mask")
             ax.set_aspect("equal", adjustable="box")
             ax.grid(True, alpha=0.25)

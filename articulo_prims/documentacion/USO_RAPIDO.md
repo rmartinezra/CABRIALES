@@ -34,7 +34,8 @@ Incluye:
 - longitud de roca y energía crítica;
 - fast-cache y mapas theta-phi filtrados;
 - kernel empírico, smearing y event-by-event MC;
-- campaña espacial de in-scattering con 10 workers por punto;
+- campaña espacial de in-scattering con pasos nativos de `10 m` y 10 workers
+  por punto;
 - validación del pipeline y del resumen de background.
 
 La salida predeterminada es:
@@ -44,8 +45,8 @@ run_machin90dia_allpoints_full/
 ```
 
 El background queda en
-`10_in_scattering_background/machin90d_4points_volcano_surface_workers10/`.
-Si se pasa `--workers N`, el sufijo cambia automáticamente a `workersN`.
+`10_in_scattering_background/machin90d_4points_volcano_surface_step10m_workers10/`.
+Si se cambia `--ray-step-m` o `--workers`, el sufijo registra ambos valores.
 
 Antes de reemplazar una corrida, revisar los comandos:
 

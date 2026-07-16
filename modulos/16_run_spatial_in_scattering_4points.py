@@ -36,7 +36,7 @@ class TransportConfig:
     sample_probability: float = 1.0
     head: int = 0
     base_seed: int = 12345
-    ray_step_m: float = 100.0
+    ray_step_m: float = 10.0
     max_track_m: float = 9000.0
     grid_step_m: float = 50.0
     edge_guard_m: float = 500.0
@@ -45,8 +45,9 @@ class TransportConfig:
     entry_check_m: float = 10.0
     theta_max_deg: float = 90.0
     max_angular_margin_deg: float = 5.0
-    min_survival_rock_m: float = 100.0
+    min_survival_rock_m: float = 10.0
     kernel_scale: float = 1.0
+    kernel_energy_extrapolation: str = "momentum-scale"
     disable_scattering: bool = False
 
 
@@ -55,10 +56,11 @@ def parser() -> argparse.ArgumentParser:
     ap.add_argument(
         "--out-root",
         type=Path,
-        default=Path("run_machin90dia_allpoints_full/10_in_scattering_background/machin90d_4points_volcano_surface_workers8"),
+        default=None,
+        help="Salida opcional; el nombre automatico registra paso y workers.",
     )
     ap.add_argument("--points", nargs="+", choices=POINTS, default=list(POINTS))
-    ap.add_argument("--workers", type=int, default=8)
+    ap.add_argument("--workers", type=int, default=10)
     ap.add_argument("--force", action="store_true", help="Remove existing per-point output before running it.")
     ap.add_argument("--no-figures", action="store_true")
     ap.add_argument("--continue-on-existing", action="store_true", help="Reuse already reduced points when present.")
@@ -81,7 +83,7 @@ def parser() -> argparse.ArgumentParser:
     ap.add_argument("--sample-probability", type=float, default=1.0)
     ap.add_argument("--head", type=int, default=0)
     ap.add_argument("--seed", type=int, default=12345)
-    ap.add_argument("--ray-step-m", type=float, default=100.0)
+    ap.add_argument("--ray-step-m", type=float, default=10.0)
     ap.add_argument("--max-track-m", type=float, default=9000.0)
     ap.add_argument("--volcano-surface-grid-step-m", type=float, default=50.0)
     ap.add_argument("--volcano-surface-edge-guard-m", type=float, default=500.0)
@@ -90,8 +92,9 @@ def parser() -> argparse.ArgumentParser:
     ap.add_argument("--volcano-surface-entry-check-m", type=float, default=10.0)
     ap.add_argument("--theta-max-deg", type=float, default=90.0)
     ap.add_argument("--max-angular-margin-deg", type=float, default=5.0)
-    ap.add_argument("--min-survival-rock-m", type=float, default=100.0)
+    ap.add_argument("--min-survival-rock-m", type=float, default=10.0)
     ap.add_argument("--kernel-scale", type=float, default=1.0)
+    ap.add_argument("--kernel-energy-extrapolation", choices=["momentum-scale", "nearest"], default="momentum-scale")
     ap.add_argument("--disable-scattering", action="store_true")
     ap.add_argument(
         "--status-interval-s",
@@ -104,6 +107,14 @@ def parser() -> argparse.ArgumentParser:
 
 def repo_root() -> Path:
     return Path(__file__).resolve().parents[1]
+
+
+def default_out_root(ray_step_m: float, workers: int) -> Path:
+    step_label = f"{float(ray_step_m):g}".replace(".", "p")
+    return Path(
+        "run_machin90dia_allpoints_full/10_in_scattering_background/"
+        f"machin90d_4points_volcano_surface_step{step_label}m_workers{workers}"
+    )
 
 
 def resolve_from_root(root: Path, p: Path) -> Path:
@@ -212,6 +223,7 @@ def build_worker_cmd(
         "--min-survival-rock-m", str(cfg.min_survival_rock_m),
         "--sample-probability", str(cfg.sample_probability),
         "--kernel-scale", str(cfg.kernel_scale),
+        "--kernel-energy-extrapolation", str(cfg.kernel_energy_extrapolation),
         "--interp-method", str(args.interp_method),
         "--kernel-threshold", str(args.kernel_threshold),
         "--no-progress",
@@ -244,6 +256,13 @@ def summarize_point(point_dir: Path, point: str) -> dict[str, object]:
         "n_tracks_survived": stats.get("n_tracks_survived"),
         "n_tracks_final_inside_acceptance": stats.get("n_tracks_final_inside_acceptance"),
         "effective_area_m2": area.get("effective_area_m2"),
+        "ideal_surface_rate_muons_per_m2_day": area.get("ideal_surface_rate_muons_per_m2_day"),
+        "equivalent_area_scaled_exposure_days_for_mc_count": area.get(
+            "equivalent_area_scaled_exposure_days_for_mc_count"
+        ),
+        "equivalent_area_scaled_exposure_seconds_for_mc_count": area.get(
+            "equivalent_area_scaled_exposure_seconds_for_mc_count"
+        ),
         "area_scaled_count_90d": area.get("area_scaled_count_90d"),
         "area_scaled_count_per_day": area.get("area_scaled_count_per_day"),
         "poisson95_area_scaled_count_per_day_low": area.get("poisson95_area_scaled_count_per_day_low"),
@@ -373,6 +392,20 @@ def write_campaign_summary(out_root: Path, rows: list[dict[str, object]], cfg: T
         "area_scaled_count_per_day": sum(float(r.get("area_scaled_count_per_day") or 0.0) for r in ok_rows),
         "effective_area_m2": sum(float(r.get("effective_area_m2") or 0.0) for r in ok_rows),
     }
+    totals["area_weighted_ideal_surface_rate_muons_per_m2_day"] = (
+        totals["area_scaled_count_per_day"] / totals["effective_area_m2"]
+        if totals["effective_area_m2"] > 0.0
+        else None
+    )
+    totals["equivalent_area_scaled_exposure_days_for_mc_count"] = (
+        totals["weighted_accepted_count"] / totals["area_scaled_count_per_day"]
+        if totals["area_scaled_count_per_day"] > 0.0
+        else None
+    )
+    equivalent_days = totals["equivalent_area_scaled_exposure_days_for_mc_count"]
+    totals["equivalent_area_scaled_exposure_seconds_for_mc_count"] = (
+        equivalent_days * 86400.0 if equivalent_days is not None else None
+    )
     summary = {
         "created_at": time.strftime("%Y-%m-%d %H:%M:%S"),
         "module": Path(__file__).name,
@@ -392,6 +425,12 @@ def write_campaign_summary(out_root: Path, rows: list[dict[str, object]], cfg: T
             "horizontal DEM target area and are not detector rates unless an additional detector area/geometry "
             "normalization is applied."
         ),
+        "surface_rate_scope_note": (
+            "Per-point ideal_surface_rate_muons_per_m2_day is weighted_accepted_count / 90 days for the "
+            "original 1 m2 CNF flux normalization. The campaign total is area-weighted across point-specific "
+            "surfaces, which may overlap physically. Equivalent exposure is the time on those full surfaces "
+            "needed to accumulate the same accepted MC count; none of these quantities is a detector rate."
+        ),
         "rows": rows,
     }
     out_root.mkdir(parents=True, exist_ok=True)
@@ -401,6 +440,10 @@ def write_campaign_summary(out_root: Path, rows: list[dict[str, object]], cfg: T
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
         writer.writerows(rows)
+    surface_rate = totals["area_weighted_ideal_surface_rate_muons_per_m2_day"]
+    equivalent_seconds = totals["equivalent_area_scaled_exposure_seconds_for_mc_count"]
+    surface_rate_text = "n/a" if surface_rate is None else f"{surface_rate:.6g}"
+    equivalent_seconds_text = "n/a" if equivalent_seconds is None else f"{equivalent_seconds:.6g}"
     (out_root / "README.txt").write_text(
         "\n".join(
             [
@@ -415,6 +458,10 @@ def write_campaign_summary(out_root: Path, rows: list[dict[str, object]], cfg: T
                 "- P*/reduced/spatial_source_external_map.png",
                 "- P*/reduced/spatial_first_rock_contact_xy.png",
                 "",
+                f"Accepted MC count (90 d, original 1 m2 normalization): {totals['weighted_accepted_count']:g}",
+                f"Area-weighted ideal surface rate: {surface_rate_text} muons/(m2 day)",
+                f"Equivalent exposure on the full point-specific surfaces: {equivalent_seconds_text} s",
+                "",
                 summary["physical_scope_note"],
                 "",
             ]
@@ -427,10 +474,14 @@ def main(argv=None) -> int:
     args = parser().parse_args(argv)
     if args.workers <= 0:
         raise ValueError("--workers must be positive")
+    if args.ray_step_m < 1.0:
+        raise ValueError("--ray-step-m must be >= 1 m")
     if args.status_interval_s < 0:
         raise ValueError("--status-interval-s must be non-negative")
     if args.force and args.continue_on_existing:
         raise ValueError("--force and --continue-on-existing cannot be used together")
+    if args.out_root is None:
+        args.out_root = default_out_root(args.ray_step_m, args.workers)
     root = repo_root()
     check_inputs(root, args)
     resolve_from_root(root, args.out_root).mkdir(parents=True, exist_ok=True)
@@ -449,6 +500,7 @@ def main(argv=None) -> int:
         max_angular_margin_deg=args.max_angular_margin_deg,
         min_survival_rock_m=args.min_survival_rock_m,
         kernel_scale=args.kernel_scale,
+        kernel_energy_extrapolation=args.kernel_energy_extrapolation,
         disable_scattering=args.disable_scattering,
     )
     started = time.monotonic()

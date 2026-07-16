@@ -77,20 +77,25 @@ volcánica muestreada y el histograma de longitud de roca de los aceptados.
 **Trazabilidad:** cifras y mapas regenerados el 15 de julio de 2026 con todo el
 cache cinemático de 90 días, `sample_probability=1`, 10 workers, semilla base
 `12345` y el kernel `hybrid_empirical_kernel_library.npz`. Cada punto leyó
-`1,363,053,739` eventos y registró cero pasos sin soporte del kernel. Véase
+`1,363,053,739` eventos y registró cero pasos sin soporte del kernel. El
+transporte espacial usó pasos nativos de `10 m` y corrección `1/(beta*p)` fuera
+del rango energético medido. Véase
 `documentacion/KERNEL_FULL_TAIL.md`.
 
-| Punto | Aceptados MC | Área efectiva ideal | Escalado ideal por día | Error relativo MC |
-|---|---:|---:|---:|---:|
-| P1 | 126 | 1.5600 km2 | 2,184,000.00 | 8.91% |
-| P2 | 69 | 2.5475 km2 | 1,953,083.33 | 12.04% |
-| P4 | 49 | 3.7050 km2 | 2,017,166.67 | 14.29% |
-| P5 | 98 | 1.6375 km2 | 1,783,055.56 | 10.10% |
-| Total | 342 | 9.4500 km2 | 7,937,305.56 | 5.41% para el conteo MC |
+| Punto | Aceptados MC / 90 d | Tasa superficial ideal [muones/(m2 dia)] | Área efectiva ideal | Escalado ideal por día | Exposición equivalente | Error relativo MC |
+|---|---:|---:|---:|---:|---:|---:|
+| P1 | 245 | 2.7222 | 1.5600 km2 | 4,246,666.67 | 4.98 s | 6.39% |
+| P2 | 244 | 2.7111 | 2.5475 km2 | 6,906,555.56 | 3.05 s | 6.40% |
+| P4 | 296 | 3.2889 | 3.7050 km2 | 12,185,333.33 | 2.10 s | 5.81% |
+| P5 | 231 | 2.5667 | 1.6375 km2 | 4,202,916.67 | 4.75 s | 6.58% |
+| Total | 1,016 | 2.9144 ponderada | 9.4500 km2 | 27,541,472.22 | 3.19 s ponderados | 3.14% para el conteo MC |
 
 Las áreas de los cuatro puntos se suman como superficies objetivo específicas
 de cada observador. No representan necesariamente un área física única y sin
-solapamiento.
+solapamiento. La tasa superficial media ponderada por esas áreas es
+`2.914 muones/(m2 dia)`; sigue siendo una tasa ideal de inyección y no una tasa
+instrumental. Los tiempos equivalentes indican cuánto tardaría el área completa
+en acumular el conteo MC mostrado; por punto se calculan como `90 d / A_eff`.
 
 ## Interpretación física obligatoria
 
@@ -119,7 +124,7 @@ python3 cabriales.py full --force
 ```
 
 El perfil reproducido usa 10 workers por defecto y escribe el background bajo
-`machin90d_4points_volcano_surface_workers10/`.
+`machin90d_4points_volcano_surface_step10m_workers10/`.
 
 `codigo/cnf/` contiene los dos ejecutables del generador CNF y sus dependencias.
 El peso `model.pt` no se duplica aquí; se encuentra en el repositorio principal

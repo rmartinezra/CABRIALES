@@ -20,6 +20,19 @@ validado al construir el modelo. Esta separación sigue la metadata original y
 evita extrapolar colas cercanas al umbral a muones de alta energía. El umbral
 de densidad aplicado es cero.
 
+El transporte espacial usa el nodo nativo de `10 m`. Para consultas por encima
+del rango energético medido del core, CABRIALES muestrea primero el histograma
+empírico completo del vecino y luego aplica al ángulo la razón `1/(beta*p)`
+entre la energía consultada y la energía de referencia. Esta corrección
+mantiene los cuantiles, incluida la población de hard scattering, y evita
+sobrestimar el ancho a altas energías. Los contadores del resumen separan pasos
+full-tail, core, extrapolados y corregidos por momento.
+
+El prefiltro CSDA también es de `10 m`: solo descarta muones incapaces de
+completar el primer slab. No se conserva el antiguo corte de 100 m, porque
+eliminaría trayectorias cortas de baja energía donde las colas pueden ser
+relevantes.
+
 ## Prueba de integración
 
 Comando:
@@ -53,12 +66,27 @@ python3 cabriales.py full \
   --workers 10 \
   --sample-probability 1.0 \
   --seed 12345 \
+  --ray-step-m 10 \
+  --kernel-energy-extrapolation momentum-scale \
   --force
 ```
 
 El pipeline produjo 184 salidas indexadas, ninguna faltante y cero alertas en
 logs. El background espacial leyó `1,363,053,739` eventos por punto y aceptó
-126, 69, 49 y 98 eventos para P1, P2, P4 y P5, respectivamente. Todos los
-puntos registraron cero pasos sin soporte del kernel. Los resúmenes canónicos
-están en `resultados/` y conservan los contadores de fallback, supervivencia,
-área efectiva e incertidumbre Monte Carlo.
+245, 244, 296 y 231 eventos para P1, P2, P4 y P5, respectivamente: 1,016 en
+total. El transporte acumuló 2,558,292 pasos full-tail, 47,935,842 pasos core y 6,032,066
+pasos de alta energía corregidos por momento. Después de esa corrección se
+registraron 6,096 kicks mayores de `300 mrad`, 262 mayores de `500 mrad` y ninguno
+mayor de `1000 mrad`. Todos los puntos registraron cero pasos sin soporte del
+kernel. Los resúmenes canónicos están en `resultados/` y conservan los
+contadores de fallback, supervivencia, hard scattering, área efectiva e
+incertidumbre Monte Carlo.
+
+Con la normalización original de flujo sobre `1 m2`, las tasas superficiales
+ideales son `2.722`, `2.711`, `3.289` y `2.567 muones/(m2 dia)` para P1, P2, P4
+y P5. El promedio ponderado por las áreas objetivo es `2.914 muones/(m2 dia)`.
+Estas tasas describen la superficie ideal de inyección y no incluyen geometría
+ni eficiencia de detector. Al escalar también la exposición por el área efectiva,
+los conteos MC de P1, P2, P4 y P5 corresponden a `4.98`, `3.05`, `2.10` y
+`4.75 s` sobre sus superficies completas; el conteo combinado equivale a
+`3.19 s` ponderados.

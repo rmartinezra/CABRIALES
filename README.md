@@ -79,7 +79,8 @@ python3 cabriales.py full --force
 ```
 
 El perfil `full` usa 10 workers por defecto. Puede cambiarse con
-`--workers N`; el nombre de la carpeta del background registra el valor real.
+`--workers N`. El transporte espacial usa pasos nativos de roca de `10 m`; el
+nombre de la carpeta del background registra tanto el paso como los workers.
 
 `--force` reemplaza la salida predeterminada. Para revisar primero las órdenes
 sin modificar resultados:
@@ -108,14 +109,21 @@ El método predeterminado es híbrido. Dentro del dominio full-tail cercano al
 umbral, `tail-aware` interpola el cuerpo mediante transporte de cuantiles y,
 entre `250` y `300 mrad`, transiciona a histogramas medidos locales; más allá
 de `300 mrad` conserva directamente esas colas. Fuera de ese dominio usa la
-familia core amplia del mismo archivo, interpolada en longitud y energía. Esto
-respeta la metadata del modelo y evita extrapolar colas cercanas al umbral a
-muones de energía mucho mayor. El corte de densidad predeterminado es cero.
+familia core amplia del mismo archivo, interpolada en longitud y energía. Si
+una energía excede también el rango medido del core, se muestrea primero el
+histograma empírico completo del vecino y después se reescala el ángulo con la
+dependencia MCS estándar `1/(beta*p)`. Así se conservan la forma y los
+cuantiles raros medidos sin asignar a un muón de mayor energía el ancho angular
+de uno menos energético. El corte de densidad predeterminado es cero.
 
 En las rutas evento por evento y espaciales, una caché LRU cuantiza únicamente
-la energía en pasos de `dlog(E)=0.02`. Esa resolución es más fina que la grilla
-de transporte del modelo y evita recalcular miles de veces el mismo PDF; la
-longitud de cada paso no se cuantiza.
+la energía en pasos de `dlog(E)=0.02`. En el background, cada tramo de roca usa
+el nodo nativo de `10 m` del kernel, actualiza energía y dirección, y aplica el
+kick al final del tramo. Cada evento y muestra espacial tiene una semilla
+determinista propia, por lo que una salida temprana no cambia los muones
+posteriores. `--min-survival-rock-m 10` es solo un prefiltro CSDA de rango
+inicial alineado con el primer slab; no exige una longitud mínima mayor a la
+necesaria para completar ese primer paso.
 
 La comprobación mínima del modelo es:
 
@@ -132,7 +140,10 @@ método de interpolación en sus resúmenes.
 La corrida definitiva de los cuatro puntos fue regenerada el 15 de julio de
 2026 con el kernel híbrido, todo el cache de 90 días, `sample_probability=1`,
 semilla base `12345` y 10 workers. Cada punto leyó `1,363,053,739` eventos; no
-hubo consultas sin soporte del kernel.
+hubo consultas sin soporte del kernel. El transporte espacial acumuló 2,558,292
+pasos full-tail y 47,935,842 pasos core; después de la corrección energética se
+observaron 6,096 kicks mayores de `300 mrad`, 262 mayores de `500 mrad` y
+ninguno mayor de `1000 mrad`.
 
 El cache cinemático de 90 días se busca en este orden:
 
@@ -228,7 +239,7 @@ El resumen combinado del background queda en:
 ```text
 run_machin90dia_allpoints_full/
 └── 10_in_scattering_background/
-    └── machin90d_4points_volcano_surface_workers10/
+    └── machin90d_4points_volcano_surface_step10m_workers10/
         ├── four_point_summary.json
         ├── four_point_summary.csv
         ├── P1/
@@ -243,17 +254,22 @@ trayectorias aceptadas.
 
 ### Resultado de referencia, 90 días
 
-| Punto | Aceptados MC | Error relativo MC | Área objetivo ideal | Escalado ideal por día |
-|---|---:|---:|---:|---:|
-| P1 | 126 | 8.91% | 1.5600 km2 | 2,184,000.00 |
-| P2 | 69 | 12.04% | 2.5475 km2 | 1,953,083.33 |
-| P4 | 49 | 14.29% | 3.7050 km2 | 2,017,166.67 |
-| P5 | 98 | 10.10% | 1.6375 km2 | 1,783,055.56 |
-| Total | 342 | 5.41% para el conteo MC | 9.4500 km2 | 7,937,305.56 |
+| Punto | Aceptados MC / 90 d | Tasa superficial ideal [muones/(m2 dia)] | Error relativo MC | Área objetivo ideal | Escalado ideal por día | Exposición equivalente del conteo MC |
+|---|---:|---:|---:|---:|---:|---:|
+| P1 | 245 | 2.7222 | 6.39% | 1.5600 km2 | 4,246,666.67 | 4.98 s |
+| P2 | 244 | 2.7111 | 6.40% | 2.5475 km2 | 6,906,555.56 | 3.05 s |
+| P4 | 296 | 3.2889 | 5.81% | 3.7050 km2 | 12,185,333.33 | 2.10 s |
+| P5 | 231 | 2.5667 | 6.58% | 1.6375 km2 | 4,202,916.67 | 4.75 s |
+| Total | 1,016 | 2.9144 ponderada | 3.14% para el conteo MC | 9.4500 km2 | 27,541,472.22 | 3.19 s ponderados |
 
-El total de área suma superficies objetivo definidas por observador y puede
-contener solapamientos físicos. El escalado es un diagnóstico ideal de la
-superficie de inyección; no es una tasa instrumental.
+La tasa superficial divide el conteo Monte Carlo de 90 días por `90 d * 1 m2`
+y conserva la normalización original del flujo. El promedio ponderado por las
+áreas objetivo es `2.914 muones/(m2 dia)`. La exposición equivalente es el
+tiempo necesario sobre el área completa para acumular el mismo conteo aceptado
+que la simulación normalizada a `90 d * 1 m2`; por punto es `90 d / A_eff`. El
+total de área suma superficies definidas por observador y puede contener
+solapamientos físicos. El escalado es un diagnóstico ideal de la superficie de
+inyección; ninguna de estas cifras es una tasa instrumental.
 
 ## Generador de flujo CNF
 

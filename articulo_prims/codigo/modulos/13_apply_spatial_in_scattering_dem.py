@@ -61,9 +61,11 @@ MUON_MASS_GEV = INSCAT.MUON_MASS_GEV
 
 try:
     from plot_style import apply_scientific_style
+    from empirical_kernel_io import mcs_momentum_scale
 except ModuleNotFoundError:  # pragma: no cover
     def apply_scientific_style() -> None:
         plt.rcParams.update({"savefig.dpi": 260, "savefig.bbox": "tight"})
+    from modulos.empirical_kernel_io import mcs_momentum_scale
 
 try:
     from tqdm import tqdm
@@ -131,6 +133,15 @@ class TrackResult:
     final_position_m: tuple[float, float, float] | None = None
     first_rock_position_m: tuple[float, float, float] | None = None
     first_rock_surface_height_m: float | None = None
+    n_kernel_full_tail_steps: int = 0
+    n_kernel_core_steps: int = 0
+    n_step_deflections_gt_300_mrad: int = 0
+    n_step_deflections_gt_500_mrad: int = 0
+    n_step_deflections_gt_1000_mrad: int = 0
+    n_kernel_extrapolated_low_energy_steps: int = 0
+    n_kernel_extrapolated_high_energy_steps: int = 0
+    n_kernel_extrapolated_hull_steps: int = 0
+    n_kernel_momentum_scaled_steps: int = 0
 
 
 def now_stamp() -> str:
@@ -226,6 +237,23 @@ def scatter_direction(v: np.ndarray, dtheta_rad: float, dphi_rad: float) -> np.n
     if n <= 0.0 or not np.isfinite(n):
         return np.asarray(v, dtype=float)
     return out / n
+
+
+def sample_kernel_component_mrad(rng, prediction, widths_mrad: np.ndarray, threshold: float) -> float:
+    """Sample directly from a cached CDF when the full PDF is retained."""
+    if threshold <= 0.0 and prediction.sampling_cdf.size:
+        idx = int(np.searchsorted(prediction.sampling_cdf, rng.random(), side="right"))
+        idx = min(idx, prediction.centers_mrad.size - 1)
+        return float(prediction.centers_mrad[idx])
+    return float(
+        INSCAT.sample_delta_mrad(
+            rng,
+            prediction.centers_mrad,
+            prediction.probability_per_bin,
+            widths_mrad,
+            threshold,
+        )
+    )
 
 
 def inside_bbox(x: float, y: float, bbox_xy: tuple[float, float, float, float]) -> bool:
@@ -496,14 +524,25 @@ def propagate_spatial_track(
         start_gap = float(pos[2]) - float(start_topo) if np.isfinite(start_topo) else float("nan")
         probe = pos + float(args.volcano_surface_entry_check_m) * v
         probe_topo = dem_height(ctx, float(probe[0]), float(probe[1]))
-        if (not np.isfinite(probe_topo)) or float(probe[2]) >= float(probe_topo):
+        probe_gap = float(probe[2]) - float(probe_topo) if np.isfinite(probe_topo) else float("nan")
+        if (not np.isfinite(probe_gap)) or probe_gap >= 0.0:
             return TrackResult(False, False, False, np.nan, np.nan, None, None, 0.0, np.inf, 0, 0, 0, 0)
-        # Start the transport just inside the selected volcano surface. Otherwise
-        # coarse ray steps can skip the first rock segment and later report an
-        # unrelated DEM-border contact as the first interaction point.
-        initial_prev_pos = pos.copy()
-        initial_prev_gap = start_gap if np.isfinite(start_gap) else float(args.volcano_surface_start_offset_m)
-        pos = probe
+        # Keep the entry probe only as a direction check. Start immediately
+        # inside the interpolated surface so a 10 m transport does not omit its
+        # first measured kernel slab.
+        if np.isfinite(start_gap) and start_gap >= 0.0:
+            denom = float(start_gap - probe_gap)
+            t = float(start_gap / denom) if denom > 0.0 else 0.0
+            t = min(1.0, max(0.0, t))
+            crossing = pos + t * (probe - pos)
+        else:
+            crossing = pos.copy()
+        crossing_topo = dem_height(ctx, float(crossing[0]), float(crossing[1]))
+        if np.isfinite(crossing_topo):
+            crossing[2] = float(crossing_topo)
+        initial_prev_pos = crossing.copy()
+        initial_prev_gap = 0.0
+        pos = crossing + 1e-3 * v
     kinetic = float(kinetic0_GeV)
     touched = False
     first_rock_pos: np.ndarray | None = None
@@ -515,7 +554,20 @@ def propagate_spatial_track(
     outside_domain = 0
     no_support = 0
     n_steps_rock = 0
+    n_kernel_full_tail_steps = 0
+    n_kernel_core_steps = 0
+    n_step_deflections_gt_300_mrad = 0
+    n_step_deflections_gt_500_mrad = 0
+    n_step_deflections_gt_1000_mrad = 0
+    n_kernel_extrapolated_low_energy_steps = 0
+    n_kernel_extrapolated_high_energy_steps = 0
+    n_kernel_extrapolated_hull_steps = 0
+    n_kernel_momentum_scaled_steps = 0
     rad_to_mrad = 1000.0
+
+    core_energy_bounds = None
+    if getattr(model, "tail_aware", None) is not None:
+        core_energy_bounds = model.tail_aware.core_energy_bounds(float(args.ray_step_m))
 
     max_steps = int(max(1, math.ceil(float(args.max_track_m) / float(args.ray_step_m))))
     for _ in range(max_steps):
@@ -525,6 +577,7 @@ def propagate_spatial_track(
         gap = float(pos[2]) - float(topo) if np.isfinite(topo) else float("nan")
         inside_rock = np.isfinite(topo) and gap < 0.0
         step = float(args.ray_step_m)
+        transport_direction = v.copy()
         if inside_rock:
             if not touched:
                 first_rock_pos = pos.copy()
@@ -542,30 +595,87 @@ def propagate_spatial_track(
             n_steps_rock += 1
             rock_length += step
             if kinetic <= 0.0 or not np.isfinite(kinetic):
-                return TrackResult(touched, False, False, np.nan, np.nan, None, None, rock_length, np.inf, used_nearest, outside_domain, no_support, n_steps_rock)
+                return TrackResult(
+                    touched, False, False, np.nan, np.nan, None, None, rock_length, np.inf,
+                    used_nearest, outside_domain, no_support, n_steps_rock,
+                    n_kernel_full_tail_steps=n_kernel_full_tail_steps,
+                    n_kernel_core_steps=n_kernel_core_steps,
+                    n_step_deflections_gt_300_mrad=n_step_deflections_gt_300_mrad,
+                    n_step_deflections_gt_500_mrad=n_step_deflections_gt_500_mrad,
+                    n_step_deflections_gt_1000_mrad=n_step_deflections_gt_1000_mrad,
+                    n_kernel_extrapolated_low_energy_steps=n_kernel_extrapolated_low_energy_steps,
+                    n_kernel_extrapolated_high_energy_steps=n_kernel_extrapolated_high_energy_steps,
+                    n_kernel_extrapolated_hull_steps=n_kernel_extrapolated_hull_steps,
+                    n_kernel_momentum_scaled_steps=n_kernel_momentum_scaled_steps,
+                )
+            kinetic_next = energy_loss.advance(kinetic, step)
+            if kinetic_next is None or kinetic_next <= 0.0 or not np.isfinite(kinetic_next):
+                return TrackResult(
+                    touched, False, False, np.nan, np.nan, None, None, rock_length, np.inf,
+                    used_nearest, outside_domain, no_support, n_steps_rock,
+                    n_kernel_full_tail_steps=n_kernel_full_tail_steps,
+                    n_kernel_core_steps=n_kernel_core_steps,
+                    n_step_deflections_gt_300_mrad=n_step_deflections_gt_300_mrad,
+                    n_step_deflections_gt_500_mrad=n_step_deflections_gt_500_mrad,
+                    n_step_deflections_gt_1000_mrad=n_step_deflections_gt_1000_mrad,
+                    n_kernel_extrapolated_low_energy_steps=n_kernel_extrapolated_low_energy_steps,
+                    n_kernel_extrapolated_high_energy_steps=n_kernel_extrapolated_high_energy_steps,
+                    n_kernel_extrapolated_hull_steps=n_kernel_extrapolated_hull_steps,
+                    n_kernel_momentum_scaled_steps=n_kernel_momentum_scaled_steps,
+                )
             if not args.disable_scattering:
                 pred = model.predict_kernel(step, kinetic)
                 if pred.used_nearest_fallback:
                     used_nearest += 1
                 if pred.outside_domain:
                     outside_domain += 1
+                    if core_energy_bounds is None:
+                        n_kernel_extrapolated_hull_steps += 1
+                    elif kinetic < core_energy_bounds[0]:
+                        n_kernel_extrapolated_low_energy_steps += 1
+                    elif kinetic > core_energy_bounds[1]:
+                        n_kernel_extrapolated_high_energy_steps += 1
+                    else:
+                        n_kernel_extrapolated_hull_steps += 1
                 if not pred.valid:
                     no_support += 1
                 else:
-                    a = INSCAT.sample_delta_mrad(
-                        rng, pred.centers_mrad, pred.probability_per_bin, model.widths_mrad, args.kernel_threshold
-                    ) * float(args.kernel_scale) / rad_to_mrad
-                    b = INSCAT.sample_delta_mrad(
-                        rng, pred.centers_mrad, pred.probability_per_bin, model.widths_mrad, args.kernel_threshold
-                    ) * float(args.kernel_scale) / rad_to_mrad
+                    if pred.tail_policy == "body_quantile_tail_histogram_linear":
+                        n_kernel_full_tail_steps += 1
+                    else:
+                        n_kernel_core_steps += 1
+                    a_mrad = sample_kernel_component_mrad(rng, pred, model.widths_mrad, args.kernel_threshold)
+                    b_mrad = sample_kernel_component_mrad(rng, pred, model.widths_mrad, args.kernel_threshold)
+                    extrapolation_scale = 1.0
+                    if (
+                        pred.outside_domain
+                        and core_energy_bounds is not None
+                        and args.kernel_energy_extrapolation == "momentum-scale"
+                    ):
+                        if kinetic < core_energy_bounds[0]:
+                            reference_energy = core_energy_bounds[0]
+                        elif kinetic > core_energy_bounds[1]:
+                            reference_energy = core_energy_bounds[1]
+                        else:
+                            reference_energy = None
+                        if reference_energy is not None:
+                            extrapolation_scale = mcs_momentum_scale(kinetic, reference_energy)
+                            n_kernel_momentum_scaled_steps += 1
+                    a_mrad *= extrapolation_scale
+                    b_mrad *= extrapolation_scale
+                    step_deflection_mrad = math.hypot(a_mrad, b_mrad) * float(args.kernel_scale)
+                    n_step_deflections_gt_300_mrad += int(step_deflection_mrad > 300.0)
+                    n_step_deflections_gt_500_mrad += int(step_deflection_mrad > 500.0)
+                    n_step_deflections_gt_1000_mrad += int(step_deflection_mrad > 1000.0)
+                    a = a_mrad * float(args.kernel_scale) / rad_to_mrad
+                    b = b_mrad * float(args.kernel_scale) / rad_to_mrad
                     v = scatter_direction(v, a, b)
-            kinetic_next = energy_loss.advance(kinetic, step)
-            if kinetic_next is None or kinetic_next <= 0.0 or not np.isfinite(kinetic_next):
-                return TrackResult(touched, False, False, np.nan, np.nan, None, None, rock_length, np.inf, used_nearest, outside_domain, no_support, n_steps_rock)
             kinetic = kinetic_next
         prev_pos = pos.copy()
         prev_gap = gap
-        pos = pos + step * v
+        # Condensed-history step: move through the slab along the incoming
+        # direction and apply its angular kick at the segment endpoint.
+        pos = pos + step * transport_direction
 
     if not touched:
         return TrackResult(False, False, False, np.nan, np.nan, None, None, 0.0, np.inf, used_nearest, outside_domain, no_support, n_steps_rock)
@@ -601,6 +711,15 @@ def propagate_spatial_track(
         (float(pos[0]), float(pos[1]), float(pos[2])),
         None if first_rock_pos is None else (float(first_rock_pos[0]), float(first_rock_pos[1]), float(first_rock_pos[2])),
         None if first_rock_topo is None else float(first_rock_topo),
+        n_kernel_full_tail_steps,
+        n_kernel_core_steps,
+        n_step_deflections_gt_300_mrad,
+        n_step_deflections_gt_500_mrad,
+        n_step_deflections_gt_1000_mrad,
+        n_kernel_extrapolated_low_energy_steps,
+        n_kernel_extrapolated_high_energy_steps,
+        n_kernel_extrapolated_hull_steps,
+        n_kernel_momentum_scaled_steps,
     )
 
 
@@ -633,6 +752,7 @@ def iter_kinematic_events(args, grid, stats=None):
             pbar.close()
             return
 
+        chunk_start_index = n_seen_global
         process_chunk = (chunk_ordinal % int(args.chunk_count)) == int(args.chunk_index)
         n_seen_global += n_take
         if stats is not None:
@@ -673,6 +793,7 @@ def iter_kinematic_events(args, grid, stats=None):
                 float(total_e[idx]),
                 bool(pz_positive[idx]),
                 event_weight,
+                int(chunk_start_index + idx),
             )
         if args.head and n_seen_global >= int(args.head):
             pbar.close()
@@ -731,7 +852,8 @@ def parser() -> argparse.ArgumentParser:
     ap.add_argument("--chunk-index", type=int, default=0, help="Worker index for chunk-parallel cache processing.")
     ap.add_argument("--chunk-count", type=int, default=1, help="Number of chunk-parallel workers.")
     ap.add_argument("--seed", type=int, default=12345)
-    ap.add_argument("--ray-step-m", type=float, default=25.0)
+    ap.add_argument("--ray-step-m", type=float, default=10.0,
+                    help="Paso geometrico y espesor incremental del kernel dentro de roca.")
     ap.add_argument("--max-track-m", type=float, default=9000.0)
     ap.add_argument("--source-plane-margin-m", type=float, default=250.0)
     ap.add_argument("--source-plane-height-margin-m", type=float, default=500.0)
@@ -752,8 +874,8 @@ def parser() -> argparse.ArgumentParser:
     ap.add_argument("--position-samples-per-muon", type=int, default=1)
     ap.add_argument("--sample-probability", type=float, default=1.0,
                     help="Probabilidad de muestrear cada evento del cache; los eventos conservados pesan 1/p.")
-    ap.add_argument("--min-survival-rock-m", type=float, default=None,
-                    help="Corte temprano: descarta muones cuyo rango CSDA no alcanza esta roca minima. Por defecto usa ray-step-m.")
+    ap.add_argument("--min-survival-rock-m", type=float, default=10.0,
+                    help="Prefiltro CSDA de rango inicial; no impone una longitud minima a las trayectorias aceptadas.")
     ap.add_argument("--observer-radius-m", type=float, default=0.0,
                     help="Si >0 exige que la trayectoria final pase a esta distancia de P1. 0 desactiva chequeo.")
     ap.add_argument("--theta-min-deg", type=float, default=0.0)
@@ -768,6 +890,12 @@ def parser() -> argparse.ArgumentParser:
     ap.add_argument("--rbf-smoothing", type=float, default=0.0)
     ap.add_argument("--kernel-threshold", type=float, default=0.0)
     ap.add_argument("--kernel-scale", type=float, default=1.0)
+    ap.add_argument(
+        "--kernel-energy-extrapolation",
+        choices=["momentum-scale", "nearest"],
+        default="momentum-scale",
+        help="Fuera del rango energetico reescala el angulo empirico con 1/(beta*p), o usa el vecino sin correccion.",
+    )
     ap.add_argument("--disable-scattering", action="store_true")
     ap.add_argument("--no-figures", action="store_true")
     ap.add_argument("--no-progress", action="store_true")
@@ -778,8 +906,8 @@ def main(argv=None) -> int:
     apply_scientific_style()
     args = parser().parse_args(argv)
     args.output_dir.mkdir(parents=True, exist_ok=True)
-    if args.ray_step_m <= 0.0 or args.max_track_m <= 0.0:
-        raise ValueError("--ray-step-m and --max-track-m must be positive")
+    if args.ray_step_m < 1.0 or args.max_track_m <= 0.0:
+        raise ValueError("--ray-step-m must be >= 1 m and --max-track-m must be positive")
     if int(args.chunk_count) <= 0:
         raise ValueError("--chunk-count must be positive")
     if int(args.chunk_index) < 0 or int(args.chunk_index) >= int(args.chunk_count):
@@ -788,8 +916,6 @@ def main(argv=None) -> int:
         raise ValueError("--position-samples-per-muon must be positive")
     if not (0.0 < float(args.sample_probability) <= 1.0):
         raise ValueError("--sample-probability must be in (0, 1]")
-    if args.min_survival_rock_m is None:
-        args.min_survival_rock_m = float(args.ray_step_m)
     if float(args.min_survival_rock_m) < 0.0:
         raise ValueError("--min-survival-rock-m must be non-negative")
     if float(args.volcano_surface_grid_step_m) <= 0.0:
@@ -831,13 +957,16 @@ def main(argv=None) -> int:
         raise FileNotFoundError("No encontré data_rock.dat/muon_range_table.csv")
     energy_loss, range_table_path = INSCAT.load_energy_loss(range_file, args.output_dir, args.rho)
     model = EVENT_MC.EmpiricalKernelModel(args.kernel_npz, args.interp_method, args.rbf_smoothing)
+    kernel_step_is_native = bool(
+        model.tail_aware is not None
+        and np.any(np.isclose(model.tail_aware.transport_L_nodes_m, float(args.ray_step_m)))
+    )
     print(
         f"[KERNEL] family={model.kernel_family} method={args.interp_method} "
         f"bins={len(model.centers_mrad)} support_mrad="
         f"[{model.edges_mrad[0]:g}, {model.edges_mrad[-1]:g}] "
         f"threshold={args.kernel_threshold:g}"
     )
-    rng = np.random.default_rng(int(args.seed) + 10007 * int(args.chunk_index))
     distance_deg_grid = INSCAT.angular_distance_to_acceptance(grid, grid.inside_mask)
 
     source_grid = INSCAT.build_source_grid(args, grid)
@@ -877,6 +1006,15 @@ def main(argv=None) -> int:
         "n_kernel_nearest_fallback_steps": 0,
         "n_kernel_outside_domain_steps": 0,
         "n_kernel_no_support_steps": 0,
+        "n_kernel_full_tail_steps": 0,
+        "n_kernel_core_steps": 0,
+        "n_kernel_extrapolated_low_energy_steps": 0,
+        "n_kernel_extrapolated_high_energy_steps": 0,
+        "n_kernel_extrapolated_hull_steps": 0,
+        "n_kernel_momentum_scaled_steps": 0,
+        "n_step_deflections_gt_300_mrad": 0,
+        "n_step_deflections_gt_500_mrad": 0,
+        "n_step_deflections_gt_1000_mrad": 0,
     }
 
     x_min, x_max, y_min, y_max = ctx.bbox_xy
@@ -886,6 +1024,7 @@ def main(argv=None) -> int:
     print(f"[INFO] sample_probability={args.sample_probability:g} event_weight={1.0 / float(args.sample_probability):.6g}")
     print(f"[INFO] chunk_index={args.chunk_index} chunk_count={args.chunk_count}")
     print(f"[INFO] min_survival_rock_m={args.min_survival_rock_m:g}")
+    print(f"[INFO] ray_step_m={args.ray_step_m:g} kernel_step_is_native={str(kernel_step_is_native).lower()}")
     print(f"[INFO] max_angular_margin_deg={args.max_angular_margin_deg}")
     print(f"[INFO] source_surface={args.source_surface}")
     if volcano_sampler is not None:
@@ -898,7 +1037,7 @@ def main(argv=None) -> int:
     print(f"[INFO] entry_face_importance={args.entry_face_importance_weights}")
 
     min_survival_X_gcm2 = float(energy_loss.rho_g_cm3) * float(args.min_survival_rock_m) * 100.0
-    for theta_i, phi_i, total_e, pz_positive, event_weight in iter_kinematic_events(args, grid, stats):
+    for theta_i, phi_i, total_e, pz_positive, event_weight, event_index in iter_kinematic_events(args, grid, stats):
         if args.discard_upgoing and pz_positive:
             stats["n_discarded_upgoing"] += 1
             continue
@@ -920,8 +1059,16 @@ def main(argv=None) -> int:
             stats["n_prefilter_insufficient_range"] += 1
             continue
         sample_weight = float(event_weight) / float(args.position_samples_per_muon)
-        for _ in range(args.position_samples_per_muon):
+        for position_sample_index in range(args.position_samples_per_muon):
             stats["n_position_samples"] += 1
+            # A per-event stream keeps the same physical muon reproducible even
+            # when an earlier event exits sooner or a transport check changes.
+            rng = np.random.default_rng(np.random.SeedSequence([
+                int(args.seed),
+                int(event_index & 0xFFFFFFFF),
+                int(event_index >> 32),
+                int(position_sample_index),
+            ]))
             entry_direction = -unit_from_theta_phi(theta_i, phi_i, ctx.az_center_deg)
             start_pos, entry_face, face_importance_weight = sample_entry_position(ctx, entry_direction, rng, args, volcano_sampler)
             if start_pos is None or entry_face is None:
@@ -933,6 +1080,15 @@ def main(argv=None) -> int:
             stats["n_kernel_nearest_fallback_steps"] += result.used_nearest
             stats["n_kernel_outside_domain_steps"] += result.outside_domain
             stats["n_kernel_no_support_steps"] += result.no_support
+            stats["n_kernel_full_tail_steps"] += result.n_kernel_full_tail_steps
+            stats["n_kernel_core_steps"] += result.n_kernel_core_steps
+            stats["n_kernel_extrapolated_low_energy_steps"] += result.n_kernel_extrapolated_low_energy_steps
+            stats["n_kernel_extrapolated_high_energy_steps"] += result.n_kernel_extrapolated_high_energy_steps
+            stats["n_kernel_extrapolated_hull_steps"] += result.n_kernel_extrapolated_hull_steps
+            stats["n_kernel_momentum_scaled_steps"] += result.n_kernel_momentum_scaled_steps
+            stats["n_step_deflections_gt_300_mrad"] += result.n_step_deflections_gt_300_mrad
+            stats["n_step_deflections_gt_500_mrad"] += result.n_step_deflections_gt_500_mrad
+            stats["n_step_deflections_gt_1000_mrad"] += result.n_step_deflections_gt_1000_mrad
             if not result.touched_rock:
                 # Includes directions that do not enter from the source plane.
                 line = unit_from_theta_phi(theta_i, phi_i, ctx.az_center_deg)
@@ -968,6 +1124,8 @@ def main(argv=None) -> int:
                 contact_inside = False
             accepted_rows.append({
                 "accepted_id": int(len(accepted_rows) + 1),
+                "source_event_index": int(event_index),
+                "position_sample_index": int(position_sample_index),
                 "start_x_m": float(start_pos[0]),
                 "start_y_m": float(start_pos[1]),
                 "start_z_m": float(start_pos[2]),
@@ -989,6 +1147,13 @@ def main(argv=None) -> int:
                 "phi_final_deg": float(result.phi_final_deg),
                 "kinetic_initial_GeV": float(kinetic0),
                 "rock_length_m": float(result.rock_length_m),
+                "n_steps_rock": int(result.n_steps_rock),
+                "n_kernel_full_tail_steps": int(result.n_kernel_full_tail_steps),
+                "n_kernel_core_steps": int(result.n_kernel_core_steps),
+                "n_kernel_momentum_scaled_steps": int(result.n_kernel_momentum_scaled_steps),
+                "n_step_deflections_gt_300_mrad": int(result.n_step_deflections_gt_300_mrad),
+                "n_step_deflections_gt_500_mrad": int(result.n_step_deflections_gt_500_mrad),
+                "n_step_deflections_gt_1000_mrad": int(result.n_step_deflections_gt_1000_mrad),
                 "closest_approach_m": float(result.closest_approach_m),
                 "entry_face": str(entry_face),
                 "base_sample_weight": float(sample_weight),
@@ -1008,13 +1173,18 @@ def main(argv=None) -> int:
     accepted_tracks_path = args.output_dir / "spatial_accepted_tracks.csv"
     accepted_columns = [
         "accepted_id",
+        "source_event_index", "position_sample_index",
         "start_x_m", "start_y_m", "start_z_m",
         "first_rock_x_m", "first_rock_y_m", "first_rock_z_m", "first_rock_topo_m",
         "first_rock_edge_distance_m", "theta_first_rock_los_deg", "phi_first_rock_los_deg", "first_rock_los_inside_acceptance",
         "initial_distance_to_acceptance_deg",
         "final_x_m", "final_y_m", "final_z_m",
         "theta_initial_deg", "phi_initial_deg", "theta_final_deg", "phi_final_deg",
-        "kinetic_initial_GeV", "rock_length_m", "closest_approach_m",
+        "kinetic_initial_GeV", "rock_length_m", "n_steps_rock",
+        "n_kernel_full_tail_steps", "n_kernel_core_steps",
+        "n_kernel_momentum_scaled_steps",
+        "n_step_deflections_gt_300_mrad", "n_step_deflections_gt_500_mrad", "n_step_deflections_gt_1000_mrad",
+        "closest_approach_m",
         "entry_face", "base_sample_weight", "face_importance_weight", "sample_weight", "final_i", "final_j",
     ]
     accepted_df = pd.DataFrame(accepted_rows, columns=accepted_columns)
@@ -1048,8 +1218,8 @@ def main(argv=None) -> int:
                 linewidths=0.0,
             )
             ax.scatter([0.0], [0.0], marker="*", s=130, color="black", label=point)
-            ax.set_xlabel("East from P1 (km)")
-            ax.set_ylabel("North from P1 (km)")
+            ax.set_xlabel(f"East from {point} (km)")
+            ax.set_ylabel(f"North from {point} (km)")
             ax.set_title("Volcano-surface target points selected from DEM and angular mask")
             ax.set_aspect("equal", adjustable="box")
             ax.grid(True, alpha=0.25)
@@ -1125,8 +1295,8 @@ def main(argv=None) -> int:
             if len(accepted_df) <= 80:
                 for row in accepted_df.itertuples(index=False):
                     ax.text(row.final_x_m / 1000.0, row.final_y_m / 1000.0, str(int(row.accepted_id)), fontsize=7, ha="center", va="center")
-            ax.set_xlabel("East from P1 (km)")
-            ax.set_ylabel("North from P1 (km)")
+            ax.set_xlabel(f"East from {point} (km)")
+            ax.set_ylabel(f"North from {point} (km)")
             ax.set_title("Accepted in-scattering tracks in DEM box, plan view")
             ax.set_aspect("equal", adjustable="box")
             ax.grid(True, alpha=0.25)
@@ -1148,8 +1318,8 @@ def main(argv=None) -> int:
                 linewidth=0.35,
             )
             ax.scatter([0.0], [0.0], marker="*", s=130, color="black", label=point)
-            ax.set_xlabel("East from P1 (km)")
-            ax.set_ylabel("North from P1 (km)")
+            ax.set_xlabel(f"East from {point} (km)")
+            ax.set_ylabel(f"North from {point} (km)")
             ax.set_title("Accepted in-scattering first DEM-rock contact points")
             ax.set_aspect("equal", adjustable="box")
             ax.grid(True, alpha=0.25)
@@ -1195,6 +1365,8 @@ def main(argv=None) -> int:
             "chunk_count": int(args.chunk_count),
             "seed": int(args.seed),
             "ray_step_m": float(args.ray_step_m),
+            "kernel_step_is_native": kernel_step_is_native,
+            "transport_scheme": "fixed_rock_step_condensed_history_endpoint_kick",
             "max_track_m": float(args.max_track_m),
             "source_plane_margin_m": float(args.source_plane_margin_m),
             "source_plane_height_margin_m": float(args.source_plane_height_margin_m),
@@ -1218,6 +1390,8 @@ def main(argv=None) -> int:
             "sample_probability": float(args.sample_probability),
             "sample_event_weight": float(1.0 / float(args.sample_probability)),
             "min_survival_rock_m": float(args.min_survival_rock_m),
+            "min_survival_rock_m_role": "initial_CSDA_range_prefilter_not_minimum_accepted_path",
+            "random_stream_policy": "deterministic_per_source_event_and_position_sample",
             "rho_g_cm3": float(args.rho),
             "interp_method": args.interp_method,
             "kernel_family": model.kernel_family,
@@ -1226,6 +1400,11 @@ def main(argv=None) -> int:
             "kernel_energy_cache_dlog": float(model.tail_aware.energy_cache_dlog) if model.tail_aware is not None else 0.0,
             "kernel_threshold": float(args.kernel_threshold),
             "kernel_scale": float(args.kernel_scale),
+            "kernel_energy_extrapolation": str(args.kernel_energy_extrapolation),
+            "kernel_energy_extrapolation_note": (
+                "The complete empirical PDF is sampled first; outside measured energy bounds, "
+                "the sampled angle is mapped with the standard 1/(beta*p) MCS scaling."
+            ),
             "disable_scattering": bool(args.disable_scattering),
         },
         "stats": stats,

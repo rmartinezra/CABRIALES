@@ -44,6 +44,29 @@ TAIL_AWARE_REQUIRED_KEYS = (
     "full_tail_transport_probabilities",
 )
 
+MUON_MASS_GEV = 0.10565837
+
+
+def mcs_momentum_scale(
+    kinetic_query_GeV: float,
+    kinetic_reference_GeV: float,
+    mass_GeV: float = MUON_MASS_GEV,
+) -> float:
+    """Map a sampled MCS angle with the standard 1/(beta*p) dependence.
+
+    The full empirical PDF is sampled first, including its measured tail. This
+    factor only maps that angle from the nearest measured energy to an
+    out-of-domain query energy.
+    """
+    def inverse_beta_p(kinetic_GeV: float) -> float:
+        total = float(kinetic_GeV) + float(mass_GeV)
+        momentum_sq = float(kinetic_GeV) * (float(kinetic_GeV) + 2.0 * float(mass_GeV))
+        if total <= 0.0 or momentum_sq <= 0.0:
+            raise ValueError("Kinetic energy and mass must define a positive momentum")
+        return total / momentum_sq
+
+    return inverse_beta_p(float(kinetic_query_GeV)) / inverse_beta_p(float(kinetic_reference_GeV))
+
 
 @dataclass(frozen=True)
 class EmpiricalKernelLibrary:
@@ -157,6 +180,7 @@ def load_empirical_kernel_library(
 class TailAwareKernelPrediction:
     centers_mrad: np.ndarray
     probability_per_bin: np.ndarray
+    sampling_cdf: np.ndarray
     used_nearest_fallback: bool
     outside_domain: bool
     valid: bool
@@ -184,13 +208,22 @@ class _CoreKernelInterpolator:
         if np.count_nonzero(valid) < 4:
             raise RuntimeError("Too few clean core kernels in hybrid library.")
         self.probability = probability[valid]
-        self.features = np.column_stack([np.log10(length[valid]), np.log10(energy[valid])])
+        self.length_m = length[valid]
+        self.energy_GeV = energy[valid]
+        self.features = np.column_stack([np.log10(self.length_m), np.log10(self.energy_GeV)])
         self.mean = self.features.mean(axis=0)
         self.std = self.features.std(axis=0)
         self.std[self.std == 0.0] = 1.0
         self.scaled = (self.features - self.mean) / self.std
         self.rbf = RBFInterpolator(self.scaled, self.probability, kernel="linear", smoothing=0.0)
         self.tri = Delaunay(self.features)
+
+    def energy_bounds_at_length(self, L_m: float) -> tuple[float, float]:
+        """Return measured core-energy bounds at the nearest native length."""
+        unique_length = np.unique(self.length_m)
+        nearest_length = float(unique_length[np.argmin(np.abs(np.log(unique_length / float(L_m))))])
+        selected = np.isclose(self.length_m, nearest_length)
+        return float(np.min(self.energy_GeV[selected])), float(np.max(self.energy_GeV[selected]))
 
     @staticmethod
     def _normalize(probability: np.ndarray) -> tuple[np.ndarray, bool]:
@@ -266,6 +299,7 @@ class TailAwareEmpiricalKernel:
         self.widths_mrad = np.diff(self.edges_mrad)
         self.transport_L_min_m = float(np.min(self._transport.L))
         self.transport_L_max_m = float(np.max(self._transport.L))
+        self.transport_L_nodes_m = np.unique(np.asarray(self._transport.L, dtype=float))
         self.transport_E_min_GeV = float(np.min(self._transport.E))
         self.transport_E_max_GeV = float(np.max(self._transport.E))
         self.energy_cache_dlog = float(energy_cache_dlog)
@@ -286,6 +320,10 @@ class TailAwareEmpiricalKernel:
         maximum = self._transport.features.max(axis=0)
         return bool(np.all(feature >= minimum) and np.all(feature <= maximum))
 
+    def core_energy_bounds(self, L_m: float) -> tuple[float, float]:
+        """Measured broad-core energy interval at the nearest native length."""
+        return self._core.energy_bounds_at_length(L_m)
+
     def _embed_core(self, probability: np.ndarray) -> np.ndarray:
         embedded = np.zeros_like(self.centers_mrad, dtype=float)
         embedded[self._core_indices] = probability
@@ -302,6 +340,7 @@ class TailAwareEmpiricalKernel:
         if not (np.isfinite(L_m) and np.isfinite(E_GeV) and L_m > 0.0 and E_GeV > 0.0):
             return TailAwareKernelPrediction(
                 self.centers_mrad.copy(),
+                np.zeros_like(self.centers_mrad),
                 np.zeros_like(self.centers_mrad),
                 False,
                 False,
@@ -344,6 +383,7 @@ class TailAwareEmpiricalKernel:
             return TailAwareKernelPrediction(
                 self.centers_mrad.copy(),
                 np.zeros_like(self.centers_mrad),
+                np.zeros_like(self.centers_mrad),
                 False,
                 True,
                 False,
@@ -360,10 +400,14 @@ class TailAwareEmpiricalKernel:
             probability /= total
             probability = 0.5 * (probability + probability[::-1])
             probability /= probability.sum()
+        sampling_cdf = np.cumsum(probability) if valid else np.zeros_like(probability)
+        if valid:
+            sampling_cdf /= sampling_cdf[-1]
 
         prediction = TailAwareKernelPrediction(
             self.centers_mrad.copy(),
             probability,
+            sampling_cdf,
             used_nearest,
             outside,
             valid,

@@ -26,16 +26,25 @@ DEFAULT_POINTS = ("P1", "P2", "P4", "P5")
 DEFAULT_PIPELINE_90D_OUT = Path("run_machin90dia_allpoints_full")
 DEFAULT_BACKGROUND_RUN_STEM = "machin90d_4points_volcano_surface"
 DEFAULT_KERNEL = Path("modulos/hybrid_empirical_kernel_library.npz")
+DEFAULT_ROCK_STEP_M = 10.0
+DEFAULT_MIN_SURVIVAL_ROCK_M = DEFAULT_ROCK_STEP_M
 
 
-def default_background_90d_out(pipeline_outdir: Path | str, workers: int) -> Path:
-    """Name the background campaign after its actual worker configuration."""
+def default_background_90d_out(
+    pipeline_outdir: Path | str,
+    workers: int,
+    ray_step_m: float = DEFAULT_ROCK_STEP_M,
+) -> Path:
+    """Name the background campaign after its transport configuration."""
     if workers < 1:
         raise ValueError("El background espacial requiere al menos un worker.")
+    if ray_step_m < 1.0:
+        raise ValueError("El paso de transporte debe ser >= 1 m.")
+    step_label = f"{float(ray_step_m):g}".replace(".", "p")
     return (
         Path(pipeline_outdir)
         / "10_in_scattering_background"
-        / f"{DEFAULT_BACKGROUND_RUN_STEM}_workers{workers}"
+        / f"{DEFAULT_BACKGROUND_RUN_STEM}_step{step_label}m_workers{workers}"
     )
 
 
@@ -166,6 +175,9 @@ def build_background90d_cmd(
         "--kernel-npz", args.kernel_npz,
         "--interp-method", "tail-aware",
         "--kernel-threshold", str(args.empirical_kernel_threshold),
+        "--ray-step-m", str(args.ray_step_m),
+        "--min-survival-rock-m", str(args.min_survival_rock_m),
+        "--kernel-energy-extrapolation", str(args.kernel_energy_extrapolation),
         "--points", *point_args(args.points),
         "--status-interval-s", str(args.status_interval_s),
     ]
@@ -251,7 +263,11 @@ def validate_background(out_root: Path | str, points: Iterable[str], *, dry_run:
 
 
 def cmd_background90d(args: argparse.Namespace, extra: list[str]) -> int:
-    out_root = args.out_root or default_background_90d_out(DEFAULT_PIPELINE_90D_OUT, args.workers)
+    out_root = args.out_root or default_background_90d_out(
+        DEFAULT_PIPELINE_90D_OUT,
+        args.workers,
+        args.ray_step_m,
+    )
     rc = run(
         build_background90d_cmd(args, extra, out_root=out_root),
         label="Background espacial 90 dias",
@@ -267,6 +283,7 @@ def cmd_full(args: argparse.Namespace, extra: list[str]) -> int:
     background_out_root = args.background_out_root or default_background_90d_out(
         args.pipeline_outdir,
         args.workers,
+        args.ray_step_m,
     )
     # Keep pass-through arguments on the pipeline step, where most framework flags live.
     pipeline_args = argparse.Namespace(**vars(args))
@@ -373,6 +390,9 @@ def build_parser() -> argparse.ArgumentParser:
     bg.add_argument("--seed", type=int, default=12345)
     bg.add_argument("--kernel-npz", default=str(DEFAULT_KERNEL))
     bg.add_argument("--empirical-kernel-threshold", type=float, default=0.0)
+    bg.add_argument("--ray-step-m", type=float, default=DEFAULT_ROCK_STEP_M)
+    bg.add_argument("--min-survival-rock-m", type=float, default=DEFAULT_MIN_SURVIVAL_ROCK_M)
+    bg.add_argument("--kernel-energy-extrapolation", choices=["momentum-scale", "nearest"], default="momentum-scale")
     bg.add_argument("--head", type=int, default=0, help="Limita los eventos de flujo por punto; 0 usa todo el cache.")
     bg.add_argument("--force", action="store_true")
     bg.add_argument("--continue-on-existing", action="store_true")
@@ -403,6 +423,9 @@ def build_parser() -> argparse.ArgumentParser:
     all90d.add_argument("--seed", type=int, default=12345)
     all90d.add_argument("--kernel-npz", default=str(DEFAULT_KERNEL))
     all90d.add_argument("--empirical-kernel-threshold", type=float, default=0.0)
+    all90d.add_argument("--ray-step-m", type=float, default=DEFAULT_ROCK_STEP_M)
+    all90d.add_argument("--min-survival-rock-m", type=float, default=DEFAULT_MIN_SURVIVAL_ROCK_M)
+    all90d.add_argument("--kernel-energy-extrapolation", choices=["momentum-scale", "nearest"], default="momentum-scale")
     all90d.add_argument("--head", type=int, default=0, help="Limita event-MC y background por punto; 0 usa todo el cache.")
     all90d.add_argument("--discard-upgoing", action="store_true")
     all90d.add_argument("--skip-event-mc", action="store_true")

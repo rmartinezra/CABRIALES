@@ -5,7 +5,11 @@ from pathlib import Path
 
 import numpy as np
 
-from modulos.empirical_kernel_io import TailAwareEmpiricalKernel, load_empirical_kernel_library
+from modulos.empirical_kernel_io import (
+    TailAwareEmpiricalKernel,
+    load_empirical_kernel_library,
+    mcs_momentum_scale,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -41,6 +45,19 @@ class TailAwareKernelTest(unittest.TestCase):
         self.assertGreater(float(probability[np.abs(centers) > 1000.0].sum()), 1e-8)
         self.assertEqual(self.prediction.tail_policy, "body_quantile_tail_histogram_linear")
 
+    def test_ten_meter_native_step_preserves_hard_scattering(self) -> None:
+        prediction = self.model.predict_kernel(10.0, 4.518392)
+        centers = prediction.centers_mrad
+        probability = prediction.probability_per_bin
+        self.assertTrue(np.any(np.isclose(self.model.transport_L_nodes_m, 10.0)))
+        self.assertEqual(prediction.interpolation_mode, "grid_exact_L")
+        self.assertEqual(prediction.tail_policy, "body_quantile_tail_histogram_linear")
+        self.assertGreater(float(probability[np.abs(centers) > 300.0].sum()), 1e-2)
+        self.assertGreater(float(probability[np.abs(centers) > 500.0].sum()), 1e-3)
+        self.assertGreater(float(probability[np.abs(centers) > 1000.0].sum()), 1e-5)
+        self.assertAlmostEqual(float(prediction.sampling_cdf[-1]), 1.0, places=15)
+        self.assertTrue(np.all(np.diff(prediction.sampling_cdf) >= 0.0))
+
     def test_high_energy_query_uses_broad_core_model(self) -> None:
         prediction = self.model.predict_kernel(100.0, 200.0)
         self.assertTrue(prediction.valid)
@@ -48,6 +65,11 @@ class TailAwareKernelTest(unittest.TestCase):
         self.assertEqual(prediction.tail_policy, "broad_domain_core_measured_support")
         self.assertFalse(prediction.outside_domain)
         self.assertAlmostEqual(float(prediction.probability_per_bin.sum()), 1.0, places=12)
+
+    def test_momentum_scaling_contracts_high_energy_angles(self) -> None:
+        self.assertLess(mcs_momentum_scale(120.0, 60.0), 1.0)
+        self.assertAlmostEqual(mcs_momentum_scale(60.0, 60.0), 1.0, places=15)
+        self.assertGreater(mcs_momentum_scale(30.0, 60.0), 1.0)
 
 
 if __name__ == "__main__":

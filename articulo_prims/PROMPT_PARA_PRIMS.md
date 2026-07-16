@@ -30,8 +30,10 @@ Reglas físicas que no deben violarse:
   inyección multiplica el número ideal de muones incidentes.
 - Indicar que las áreas sumadas por punto no son necesariamente una superficie
   física única sin solapamiento.
-- Mantener separados los 342 eventos MC aceptados de los conteos escalados por
+- Mantener separados los 1,016 eventos MC aceptados de los conteos escalados por
   área.
+- Reportar la tasa superficial ideal media de `2.914 muones/(m2 dia)` y dejar
+  claro que no es una tasa de detector.
 - Reportar la incertidumbre Monte Carlo de cada punto.
 
 Usa las figuras de `imagenes/` y propón pies de figura informativos. Prioriza:

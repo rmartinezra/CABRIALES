@@ -180,9 +180,12 @@ def output_prefix_for_source_mode(source_mode: str) -> str:
 class KernelPrediction:
     centers_mrad: np.ndarray
     probability_per_bin: np.ndarray
+    sampling_cdf: np.ndarray
     used_nearest_fallback: bool
     outside_domain: bool
     valid: bool
+    interpolation_mode: str = "legacy"
+    tail_policy: str = "legacy"
 
 
 class EmpiricalKernelModel:
@@ -268,12 +271,16 @@ class EmpiricalKernelModel:
             return KernelPrediction(
                 pred.centers_mrad,
                 pred.probability_per_bin,
+                pred.sampling_cdf,
                 pred.used_nearest_fallback,
                 pred.outside_domain,
                 pred.valid,
+                pred.interpolation_mode,
+                pred.tail_policy,
             )
         if (not np.isfinite(L_m)) or (not np.isfinite(E_GeV)) or L_m <= 0.0 or E_GeV <= 0.0:
-            return KernelPrediction(self.centers_mrad.copy(), np.zeros_like(self.centers_mrad), False, False, False)
+            zeros = np.zeros_like(self.centers_mrad)
+            return KernelPrediction(self.centers_mrad.copy(), zeros, zeros.copy(), False, False, False)
 
         q = self._query(L_m, E_GeV)
         outside = bool(np.any(q < self.X_min) or np.any(q > self.X_max))
@@ -307,7 +314,19 @@ class EmpiricalKernelModel:
                 pred = pred[0]
             used_nearest = True
             p, ok = self._normalize(pred)
-        return KernelPrediction(self.centers_mrad.copy(), p, used_nearest, outside, ok)
+        sampling_cdf = np.cumsum(p) if ok else np.zeros_like(p)
+        if ok:
+            sampling_cdf /= sampling_cdf[-1]
+        return KernelPrediction(
+            self.centers_mrad.copy(),
+            p,
+            sampling_cdf,
+            used_nearest,
+            outside,
+            ok,
+            self.interp_method,
+            "legacy",
+        )
 
 
 # -----------------------------------------------------------------------------
